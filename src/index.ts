@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
 import { activeTask, emptyState, reminder, restoreState, terminal, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
 
-const id = Type.String({ pattern: "^[0-9a-z]{2}$", description: "Immutable two-character task ID" });
+const id = Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Immutable two-character task ID" });
 const parent = Type.Optional(Type.Union([id, Type.Null()], { description: "Existing parent ID; null means root" }));
 const position = { before: Type.Optional(id), after: Type.Optional(id) };
 const ancestorOutcomes = Type.Optional(Type.Record(id, Type.String({ minLength: 1 }), { description: "Final summaries for waiting ancestors completed by this operation" }));

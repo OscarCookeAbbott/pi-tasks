@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Task IDs use the full two-character base-62 alphabet, raising the namespace from 1,296 to 3,844 IDs. Existing lowercase base-36 IDs remain valid.
+
 ## 0.2.0
 
 - Boxed IDs and closed/total counts replace row order numbers and redundant UI labels.

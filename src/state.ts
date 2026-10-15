@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 
+const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const ID_COUNT = ID_ALPHABET.length * ID_ALPHABET.length;
+const encodeId = (value: number): string => ID_ALPHABET[Math.floor(value / ID_ALPHABET.length)] + ID_ALPHABET[value % ID_ALPHABET.length];
+
 export type Visibility = "hidden" | "active" | "incomplete" | "all";
 export type Status = "future" | "active" | "waiting" | "completed" | "cancelled";
 export interface Task {
@@ -51,11 +55,11 @@ function subtreeEnd(state: TaskState, index: number): number {
 
 // IDs are allocated once. Linear probing resolves the inevitable short-hash collisions.
 export function allocateId(state: TaskState, seed = randomBytes(16).toString("hex")): string {
-  if (state.tasks.length >= 1296) throw new Error("All 1,296 two-character task IDs have been used in this history.");
+  if (state.tasks.length >= ID_COUNT) throw new Error(`All ${ID_COUNT} two-character task IDs have been used in this history.`);
   const used = new Set(state.tasks.map((task) => task.id));
-  const start = createHash("sha256").update(seed).digest().readUInt32BE(0) % 1296;
-  for (let offset = 0; offset < 1296; offset++) {
-    const id = ((start + offset) % 1296).toString(36).padStart(2, "0");
+  const start = createHash("sha256").update(seed).digest().readUInt32BE(0) % ID_COUNT;
+  for (let offset = 0; offset < ID_COUNT; offset++) {
+    const id = encodeId((start + offset) % ID_COUNT);
     if (!used.has(id)) return id;
   }
   throw new Error("Task ID space exhausted.");
@@ -191,7 +195,7 @@ export function validateState(state: TaskState): void {
   let activeCount = 0;
   let futureSeen = false;
   for (const task of state.tasks) {
-    if (!/^[0-9a-z]{2}$/.test(task.id) || seen.has(task.id)) throw new Error("Invalid or duplicate task ID.");
+    if (!/^[0-9a-zA-Z]{2}$/.test(task.id) || seen.has(task.id)) throw new Error("Invalid or duplicate task ID.");
     requiredText(task.title, "Title");
     if (!["future", "active", "waiting", "completed", "cancelled"].includes(task.status)) throw new Error("Invalid task status.");
     if (task.parent !== null) {

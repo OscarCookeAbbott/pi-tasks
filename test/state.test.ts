@@ -157,14 +157,14 @@ test("waiting parents can receive more future children, but closed parents canno
 
 test("short hash collisions are resolved without ID reuse and exhaustion is explicit", () => {
   let state = emptyState();
-  for (let index = 0; index < 1296; index++) {
+  for (let index = 0; index < 3844; index++) {
     const id = allocateId(state, "same seed");
-    assert.match(id, /^[0-9a-z]{2}$/);
+    assert.match(id, /^[0-9a-zA-Z]{2}$/);
     assert.ok(!state.tasks.some((task) => task.id === id));
     state.tasks.push({ id, title: "Used", parent: null, status: "cancelled", outcome: "Cancelled." });
   }
-  assert.equal(new Set(state.tasks.map((task) => task.id)).size, 1296);
-  assert.throws(() => allocateId(state), /1,296/);
+  assert.equal(new Set(state.tasks.map((task) => task.id)).size, 3844);
+  assert.throws(() => allocateId(state), /3844/);
 });
 
 test("snapshots restore the supplied branch, are isolated, and fail closed on corrupt data", () => {

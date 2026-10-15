@@ -46,7 +46,7 @@ The `tasks` tool accepts:
 | `complete` | active `id`, brief `outcome`; optional `ancestorOutcomes` |
 | `cancel` | active/future `id`; optional `reason`, `ancestorOutcomes` |
 
-Use the two-character IDs inside brackets, without brackets in tool arguments. IDs are immutable lowercase base-36 short hashes with collision resolution. Closed IDs are never recycled within the current history; the finite namespace supports 1,296 tasks. They are not globally unique across sessions or alternative branches.
+Use the two-character IDs inside brackets, without brackets in tool arguments. IDs are immutable two-character base-62 short hashes with collision resolution. Closed IDs are never recycled within the current history; the finite namespace supports 3,844 tasks. They are not globally unique across sessions or alternative branches.
 
 Additions default to root/end. Moves retain their parent when `parent` is omitted; `parent: null` moves to the root. Reparenting without a position appends under the new parent. Anchors must be siblings of the added/moved task; `after` means after the anchor's entire subtree. Specify at most one of `before` and `after`.
 
