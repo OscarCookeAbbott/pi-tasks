@@ -1,5 +1,5 @@
 {
-  "name": "@oscarcookeabbott/pi-tasks",
+  "name": "@oscar-robin/pi-tasks",
   "version": "0.1.0",
   "description": "Forward-only task trees, progress UI, and session-aware reminders for Pi.",
   "type": "module",
