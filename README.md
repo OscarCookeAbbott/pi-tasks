@@ -10,7 +10,7 @@ Requires Node 22.19 or newer and Pi. Tested against **Pi 1.2.0**; older Pi relea
 pi install git:github.com/OscarCookeAbbott/pi-tasks
 ```
 
-Start a new session or run `/reload`. For a pinned release, append `@v0.1.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
+Start a new session or run `/reload`. For a pinned release, append `@v0.2.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
 
 Use `pi install --local <source>` for a project-scoped installation; Pi loads it after project trust is granted. To uninstall:
 
@@ -29,7 +29,9 @@ Do not also keep a copied version under `~/.pi/agent/extensions/`: it would regi
 - `/tasks all`: show every task.
 - `/tasks show ab`: inspect a task's status, parent, own-work outcome, and final outcome.
 
-The widget shows at most eight task rows, centred near the active task. The full browser is available even when the widget is hidden. Markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Bracketed numbers show depth-first order, not reference IDs. Normal tool calls/results remain visible regardless of widget visibility.
+The widget shows at most eight task rows, centred near the active task. The full browser is available even when the widget is hidden. Headers show closed/total counts such as `3/4`; completed and cancelled tasks both count as closed, including parent tasks. This is a task count, not a work estimate.
+
+Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility.
 
 ## Agent tool
 
@@ -44,7 +46,7 @@ The `tasks` tool accepts:
 | `complete` | active `id`, brief `outcome`; optional `ancestorOutcomes` |
 | `cancel` | active/future `id`; optional `reason`, `ancestorOutcomes` |
 
-Use the returned two-character IDs, not order numbers. IDs are immutable lowercase base-36 short hashes with collision resolution. Closed IDs are never recycled within the current history; the finite namespace supports 1,296 tasks. They are not globally unique across sessions or alternative branches.
+Use the two-character IDs inside brackets, without brackets in tool arguments. IDs are immutable lowercase base-36 short hashes with collision resolution. Closed IDs are never recycled within the current history; the finite namespace supports 1,296 tasks. They are not globally unique across sessions or alternative branches.
 
 Additions default to root/end. Moves retain their parent when `parent` is omitted; `parent: null` moves to the root. Reparenting without a position appends under the new parent. Anchors must be siblings of the added/moved task; `after` means after the anchor's entire subtree. Specify at most one of `before` and `after`.
 
@@ -76,23 +78,24 @@ When an operation closes pending-completed ancestors, supply their final summari
 }
 ```
 
-Missing/blank summaries reject the entire operation without changing tasks. The error names every ancestor requiring a summary. Active-task reminders warn when completing/cancelling the active task would close ancestors. A parent's original own-work outcome remains available separately from its final summary.
+Missing/blank summaries reject the entire operation without changing tasks. The error names the ID and title of every ancestor requiring a summary. Active-task reminders warn when completing/cancelling the active task would close ancestors. A parent's original own-work outcome remains available separately from its final summary.
 
 ## Reminders and persistence
 
-Every successful task-tool result includes an active-task checkpoint. Other completed **top-level** tool calls and actual user messages count toward a **30-event** cadence by default. Nested calls (tools invoked internally by another tool, such as reads inside a `codemode` script) do not count separately. Periodic reminders are appended as hidden custom messages at safe turn boundaries; initial/restored state and compaction force a refresh. No timers, forced continuation turns, transient context edits, or rewriting old checkpoints are used. Widget visibility never disables model reminders.
+Every successful task-tool result includes a compact checkpoint: the active ID/title, parent path, and any required `ancestorOutcomes`. Workflow instructions live in the tool's prompt guidelines rather than repeating in each checkpoint. Other completed **top-level** tool calls and actual user messages count toward a **30-event** cadence by default. Nested calls (tools invoked internally by another tool, such as reads inside a `codemode` script) do not count separately. Periodic reminders are appended as hidden custom messages at safe turn boundaries; initial/restored state and compaction force a refresh. No timers, forced continuation turns, transient context edits, or rewriting old checkpoints are used. Widget visibility never disables model reminders.
 
-Configure the interval in `~/.pi/agent/settings.json` (or trusted project `.pi/settings.json`):
+Configure the interval and initial visibility in `~/.pi/agent/settings.json` (or trusted project `.pi/settings.json`):
 
 ```json
 {
   "tasks": {
-    "reminderInterval": 30
+    "reminderInterval": 30,
+    "defaultVisibility": "incomplete"
   }
 }
 ```
 
-Merge this into the existing settings object, then run `/reload`. The extension reads Pi's merged settings at session start. The interval must be a positive safe integer; invalid values produce a warning and fall back to 30. Omitted values also default to 30. Task changes and restoration/compaction refreshes do not wait for this interval.
+Merge this into the existing settings object, then run `/reload`. The extension reads Pi's merged settings at session start. The interval must be a positive safe integer. `defaultVisibility` accepts `hidden`, `active`, `incomplete`, or `all`; it applies only when the current branch has no saved task snapshot. Saved visibility is preserved. Invalid configuration warns and uses defaults: interval 30, initial visibility `incomplete`. Omitted fields use the same defaults. Task changes and restoration/compaction refreshes do not wait for the interval.
 
 The cadence is in-memory and resets on session start/reload/resume. Reminders remain ordinary append-only history, preserving existing transcript prefixes; provider cache behaviour is still provider-dependent.
 

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
-import { activeTask, emptyState, reminder, restoreState, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
+import { activeTask, emptyState, reminder, restoreState, terminal, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
 
 const id = Type.String({ pattern: "^[0-9a-z]{2}$", description: "Immutable two-character task ID" });
 const parent = Type.Optional(Type.Union([id, Type.Null()], { description: "Existing parent ID; null means root" }));
@@ -24,9 +24,11 @@ const parameters = Type.Object({
 
 const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted" } as const;
 const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state), display: false });
+const progress = (state: TaskState) => `${state.tasks.filter(terminal).length}/${state.tasks.length}`;
 
 export default function tasksExtension(pi: ExtensionAPI): void {
-  let state = emptyState();
+  let defaultVisibility: Visibility = "incomplete";
+  let state = emptyState(defaultVisibility);
   let restoreError: string | undefined;
   let skipStartingUser = false;
   let cadence = new ReminderCadence();
@@ -44,12 +46,13 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     ctx.ui.setWidget("tasks", (_tui, theme) => ({
       render(width: number): string[] {
         const lines = treeLines(state);
-        if (!lines.length) return [truncateToWidth(theme.fg("muted", "Tasks · no active task"), width)];
+        const heading = truncateToWidth(theme.fg("muted", `Tasks · ${progress(state)} · /tasks`), width);
+        if (!lines.length) return [heading];
         const activeIndex = lines.findIndex((line) => line.trimStart().startsWith("▶"));
         const start = Math.max(0, activeIndex - 2);
         const shown = lines.slice(start, start + 8);
         return [
-          truncateToWidth(theme.fg("muted", `Tasks · ${state.visibility} · /tasks to browse`), width),
+          heading,
           ...shown.map((line) => truncateToWidth(theme.fg(markers[line.trimStart()[0] as keyof typeof markers] ?? "muted", line), width)),
           ...(start > 0 || start + shown.length < lines.length ? [truncateToWidth(theme.fg("dim", `Showing ${start + 1}–${start + shown.length} of ${lines.length}`), width)] : []),
         ];
@@ -60,12 +63,12 @@ export default function tasksExtension(pi: ExtensionAPI): void {
 
   function restore(ctx: ExtensionContext): void {
     try {
-      state = restoreState(ctx.sessionManager.getBranch());
+      state = restoreState(ctx.sessionManager.getBranch(), defaultVisibility);
       restoreError = undefined;
     } catch (error) {
       // Never replace an unreadable durable snapshot with an empty one.
       restoreError = error instanceof Error ? error.message : String(error);
-      state = emptyState();
+      state = emptyState(defaultVisibility);
       ctx.ui.notify(`Tasks restoration failed: ${restoreError}`, "error");
     }
     cadence.force();
@@ -75,10 +78,18 @@ export default function tasksExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     try {
-      cadence = new ReminderCadence(readReminderInterval(pi.getSettings()));
+      const settings = pi.getSettings();
+      const interval = readReminderInterval(settings);
+      const configuredVisibility = (settings as { tasks?: { defaultVisibility?: unknown } }).tasks?.defaultVisibility;
+      if (configuredVisibility !== undefined && !["hidden", "active", "incomplete", "all"].includes(configuredVisibility as string)) {
+        throw new Error("tasks.defaultVisibility must be hidden, active, incomplete, or all.");
+      }
+      defaultVisibility = (configuredVisibility ?? "incomplete") as Visibility;
+      cadence = new ReminderCadence(interval);
     } catch (error) {
+      defaultVisibility = "incomplete";
       cadence = new ReminderCadence();
-      ctx.ui.notify(`Tasks reminder config: ${error instanceof Error ? error.message : String(error)} Using the default interval of 30.`, "warning");
+      ctx.ui.notify(`Tasks config: ${error instanceof Error ? error.message : String(error)} Using the default interval of 30 and visibility incomplete.`, "warning");
     }
     restore(ctx);
   });
@@ -122,7 +133,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       const previous = state;
       let response: string;
       if (params.action === "list") {
-        response = treeLines(state, params.visibility ?? "all").join("\n") || "No tasks in this view.";
+        response = treeLines(state, params.visibility ?? "all", "text").join("\n") || "No tasks in this view.";
       } else {
         state = transition(state, params as Action);
         try {
@@ -132,9 +143,15 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           throw error;
         }
         const changed = params.action === "add" ? state.tasks.find((task) => !previous.tasks.some((old) => old.id === task.id))! : state.tasks.find((task) => task.id === params.id)!;
-        response = `${changed.id}: ${changed.title} — ${changed.status}${changed.status === "waiting" ? ` (pending ${changed.disposition}; children remain scheduled)` : ""}${changed.outcome ? `\nOutcome: ${changed.outcome}` : ""}`;
+        const verb = { add: "Added", move: "Moved", edit: "Updated", complete: "Completed", cancel: "Cancelled" }[params.action];
+        response = `[${changed.id}] ${changed.title}`;
+        if (changed.status === "waiting") {
+          const pending = changed.disposition === "completed" ? "completion" : "cancellation";
+          response = `Waiting ${response} (${pending} pending)`;
+        } else response = `${verb} ${response}`;
+        if (changed.outcome) response += `\nOutcome: ${changed.outcome}`;
         const closed = state.tasks.filter((task) => task.id !== changed.id && previous.tasks.find((old) => old.id === task.id)?.status === "waiting" && (task.status === "completed" || task.status === "cancelled"));
-        for (const task of closed) response += `\n${task.id}: ${task.status} — ${task.outcome}`;
+        for (const task of closed) response += `\n${task.status === "completed" ? "Completed" : "Cancelled"} [${task.id}]: ${task.outcome}`;
         updateWidget(ctx);
       }
       cadence.reset();
@@ -144,7 +161,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       };
     },
     renderCall(args, theme) {
-      return new Text(theme.fg("toolTitle", `tasks ${args.action}`) + (args.id ? ` ${args.id}` : ""), 0, 0);
+      return new Text(theme.fg("toolTitle", `tasks ${args.action}`) + (args.id ? ` [${args.id}]` : ""), 0, 0);
     },
     renderResult(result, { expanded }, theme) {
       const details = result.details as { response: string; state: TaskState } | undefined;
@@ -178,7 +195,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           ctx.ui.notify("Unknown task ID.", "error");
           return;
         }
-        ctx.ui.notify(`${task.id}: ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}`, "info");
+        ctx.ui.notify(`[${task.id}] ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}`, "info");
         return;
       }
       if (value) {
@@ -186,7 +203,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         return;
       }
       if (ctx.mode !== "tui") {
-        ctx.ui.notify(treeLines(state, "all").join("\n") || "No tasks.", "info");
+        ctx.ui.notify(treeLines(state, "all", "text").join("\n") || "No tasks.", "info");
         return;
       }
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
@@ -196,7 +213,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
             const lines = treeLines(state, "all");
             const height = Math.max(1, tui.terminal.rows - 6);
             offset = Math.min(offset, Math.max(0, lines.length - height));
-            return [theme.fg("accent", "Tasks · ↑↓ / PgUp PgDn · Esc to close"), ...((lines.length ? lines : ["No tasks."]).slice(offset, offset + height).map((line) => truncateToWidth(line, width)))].map((line) => truncateToWidth(line, width));
+            return [theme.fg("accent", `Tasks · ${progress(state)} · ↑↓ / PgUp PgDn · Esc to close`), ...((lines.length ? lines : ["No tasks."]).slice(offset, offset + height).map((line) => truncateToWidth(line, width)))].map((line) => truncateToWidth(line, width));
           },
           handleInput(data) {
             if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return done();

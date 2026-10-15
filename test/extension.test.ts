@@ -46,6 +46,10 @@ function harness(settings: unknown = {}) {
     entries, notifications, widgets, ctx, emit,
     get tool() { return tool!; },
     get command() { return command; },
+    widgetLines(width = 80): string[] {
+      const factory = widgets.get("tasks");
+      return factory ? factory({}, { fg: (_color: string, text: string) => text }).render(width) : [];
+    },
     failWrites() { failWrites = true; },
     async call(params: JsonObject) {
       const validated = validateToolArguments(tool!, { type: "toolCall", id: "call", name: "tasks", arguments: params });
@@ -91,14 +95,54 @@ test("tool schema and results support atomic parent closure and immediate active
   const childResult = await h.call({ action: "add", title: "Child", parent });
   const child = childResult.details!.state.tasks[1].id;
   const waiting = await h.call({ action: "complete", id: parent, outcome: "Own work done." });
-  assert.match(waiting.details!.response, /waiting.*pending completed/);
+  assert.equal(waiting.details!.response, `Waiting [${parent}] Parent (completion pending)`);
   assert.match(waiting.content[0].type === "text" ? waiting.content[0].text : "", /ancestorOutcomes/);
   const count = h.entries.length;
-  await assert.rejects(h.call({ action: "complete", id: child, outcome: "Child done." }), new RegExp(parent));
+  await assert.rejects(h.call({ action: "complete", id: child, outcome: "Child done." }), (error: unknown) => error instanceof Error && error.message.includes(`[${parent}] Parent`));
   assert.equal(h.entries.length, count);
   const closed = await h.call({ action: "complete", id: child, outcome: "Child done.", ancestorOutcomes: { [parent]: "Everything done." } });
   assert.equal(activeTask(closed.details!.state), undefined);
   assert.match(closed.details!.response, /Everything done/);
+});
+
+test("UI uses boxed IDs and closed/total counts while agent output uses explicit states", async () => {
+  const h = harness();
+  for (const title of ["First", "Second", "Third", "Fourth"]) await h.call({ action: "add", title });
+  const listed = await h.call({ action: "list" });
+  const [a, b, c, d] = listed.details!.state.tasks.map((task) => task.id);
+  assert.equal(listed.details!.response, `active [${a}] First\nfuture [${b}] Second\nfuture [${c}] Third\nfuture [${d}] Fourth`);
+  assert.doesNotMatch(listed.content[0].type === "text" ? listed.content[0].text : "", /[▶○…✓×]/);
+  assert.equal(h.widgetLines()[0], "Tasks · 0/4 · /tasks");
+  const completed = await h.call({ action: "complete", id: a, outcome: "Done." });
+  assert.equal(completed.details!.response, `Completed [${a}] First\nOutcome: Done.`);
+  await h.call({ action: "cancel", id: b });
+  await h.call({ action: "complete", id: c, outcome: "Done." });
+  assert.deepEqual(h.widgetLines(), ["Tasks · 3/4 · /tasks", `▶ [${d}] Fourth`]);
+  for (const width of [1, 12, 80]) assert.ok(h.widgetLines(width).every((line) => visibleWidth(line) <= width));
+  await h.call({ action: "cancel", id: d });
+  assert.deepEqual(h.widgetLines(), ["Tasks · 4/4 · /tasks"]);
+});
+
+test("default visibility applies only without a saved snapshot", async () => {
+  const settings = { tasks: { defaultVisibility: "hidden" } };
+  const h = harness(settings);
+  h.emit("session_start");
+  const added = await h.call({ action: "add", title: "Work" });
+  assert.equal(added.details!.state.visibility, "hidden");
+  assert.deepEqual(h.widgetLines(), []);
+  await h.command.handler("all", h.ctx);
+  settings.tasks.defaultVisibility = "active";
+  h.emit("session_start");
+  assert.equal((await h.call({ action: "list" })).details!.state.visibility, "all");
+  h.entries.length = 0;
+  h.emit("session_tree");
+  assert.equal((await h.call({ action: "list" })).details!.state.visibility, "active");
+  for (const value of [null, "invalid", 0]) {
+    const invalid = harness({ tasks: { defaultVisibility: value } });
+    invalid.emit("session_start");
+    assert.match(invalid.notifications[0], /defaultVisibility/);
+    assert.equal((await invalid.call({ action: "list" })).details!.state.visibility, "incomplete");
+  }
 });
 
 test("reminders default to thirty top-level events, preserve history, and refresh after restore/compaction", async () => {

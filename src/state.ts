@@ -23,7 +23,7 @@ export type Action =
   | { action: "complete"; id: string; outcome: string; ancestorOutcomes?: Record<string, string> }
   | { action: "cancel"; id: string; reason?: string; ancestorOutcomes?: Record<string, string> };
 
-export const emptyState = (): TaskState => ({ version: 1, tasks: [], visibility: "incomplete" });
+export const emptyState = (visibility: Visibility = "incomplete"): TaskState => ({ version: 1, tasks: [], visibility });
 export const terminal = (task: Task): boolean => task.status === "completed" || task.status === "cancelled";
 export const activeTask = (state: TaskState): Task | undefined => state.tasks.find((task) => task.status === "active");
 
@@ -94,7 +94,7 @@ function closeWaiting(state: TaskState, summaries: Record<string, string> = {}):
     const task = findTask(state, id);
     return task.status === "completed" && !task.outcome;
   });
-  if (missing.length) throw new Error(`Include ancestorOutcomes for closing parents: ${missing.join(", ")}. No tasks changed.`);
+  if (missing.length) throw new Error(`Include ancestorOutcomes for closing parents: ${missing.map((id) => `[${id}] ${findTask(state, id).title}`).join(", ")}. No tasks changed.`);
   return closed;
 }
 
@@ -172,16 +172,16 @@ export function closingParents(state: TaskState, id: string): string[] {
 
 export function reminder(state: TaskState): string {
   const active = activeTask(state);
-  if (!active) return "[Tasks] No active task; all existing tasks are completed or cancelled.";
+  if (!active) return "[Tasks] No active task.";
   const path: string[] = [];
   let parent = active.parent;
   while (parent !== null) {
     const task = findTask(state, parent);
-    path.unshift(`${task.id} ${task.title}`);
+    path.unshift(`[${task.id}] ${task.title}`);
     parent = task.parent;
   }
   const closing = closingParents(state, active.id);
-  return `[Tasks] Active ${active.id}: ${active.title}.${path.length ? ` Parent: ${path.join(" > ")}.` : ""} Complete with an outcome, or cancel, before advancing.${closing.length ? ` Closing this task also completes ${closing.join(", ")}; include ancestorOutcomes for each.` : ""}`;
+  return `[Tasks] Active [${active.id}] ${active.title}${path.length ? ` | Parents: ${path.join(" / ")}` : ""}${closing.length ? ` | ancestorOutcomes: ${closing.map((id) => `[${id}]`).join(", ")}` : ""}`;
 }
 
 export function validateState(state: TaskState): void {
@@ -214,15 +214,15 @@ export function validateState(state: TaskState): void {
   if (state.tasks.some((task) => task.status === "waiting" && children(state, task.id).every(terminal))) throw new Error("Resolved parents must close automatically.");
 }
 
-export function restoreState(entries: readonly { type: string; customType?: string; data?: unknown }[]): TaskState {
+export function restoreState(entries: readonly { type: string; customType?: string; data?: unknown }[], defaultVisibility: Visibility = "incomplete"): TaskState {
   const entry = entries.findLast((item) => item.type === "custom" && item.customType === "tasks-state");
-  if (!entry) return emptyState();
+  if (!entry) return emptyState(defaultVisibility);
   const state = structuredClone(entry.data) as TaskState;
   validateState(state);
   return state;
 }
 
-export function treeLines(state: TaskState, visibility: Visibility = state.visibility): string[] {
+export function treeLines(state: TaskState, visibility: Visibility = state.visibility, format: "display" | "text" = "display"): string[] {
   if (visibility === "hidden") return [];
   const included = new Set(state.tasks.filter((task) => visibility === "all" || (visibility === "active" ? task.status === "active" : !terminal(task))).map((task) => task.id));
   for (const id of [...included]) {
@@ -234,11 +234,10 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
   }
   const symbols: Record<Status, string> = { future: "○", active: "▶", waiting: "…", completed: "✓", cancelled: "×" };
   const depths = new Map<string, number>();
-  return state.tasks.flatMap((task, index) => {
+  return state.tasks.flatMap((task) => {
     const depth = task.parent === null ? 0 : depths.get(task.parent)! + 1;
     depths.set(task.id, depth);
     if (!included.has(task.id)) return [];
-    const context = visibility === "active" && task.status !== "active" ? " (parent)" : "";
-    return [`${"  ".repeat(depth)}${symbols[task.status]} ${task.id} ${task.title} [${index + 1}]${context}`];
+    return [`${"  ".repeat(depth)}${format === "text" ? task.status : symbols[task.status]} [${task.id}] ${task.title}`];
   });
 }

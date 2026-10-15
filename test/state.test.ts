@@ -64,9 +64,9 @@ test("final child closes multiple ancestors with mandatory summaries in one atom
   const { state, root, branch, leaf, next } = nestedPlan();
   assert.equal(activeTask(state)?.id, leaf);
   assert.deepEqual(closingParents(state, leaf), [branch, root]);
-  assert.match(reminder(state), new RegExp(`ancestorOutcomes`));
+  assert.equal(reminder(state), `[Tasks] Active [${leaf}] Test | Parents: [${root}] Build feature / [${branch}] Implement | ancestorOutcomes: [${branch}], [${root}]`);
   const unchanged = structuredClone(state);
-  assert.throws(() => transition(state, { action: "complete", id: leaf, outcome: "Tests pass.", ancestorOutcomes: { [branch]: "Branch done." } }), new RegExp(root));
+  assert.throws(() => transition(state, { action: "complete", id: leaf, outcome: "Tests pass.", ancestorOutcomes: { [branch]: "Branch done." } }), (error: unknown) => error instanceof Error && error.message.includes(`[${root}] Build feature`));
   assert.deepEqual(state, unchanged);
   const completed = transition(state, { action: "complete", id: leaf, outcome: "Tests pass.", ancestorOutcomes: { [branch]: "Implemented and tested.", [root]: "Feature ready." } });
   assert.deepEqual(completed.tasks.slice(0, 3).map((task) => task.status), ["completed", "completed", "completed"]);
@@ -175,6 +175,8 @@ test("snapshots restore the supplied branch, are isolated, and fail closed on co
   restored.tasks[0].title = "Changed";
   assert.equal(state.tasks[0].title, "Branch A");
   assert.deepEqual(restoreState([]), emptyState());
+  assert.deepEqual(restoreState([], "hidden"), emptyState("hidden"));
+  assert.deepEqual(restoreState(entries, "hidden"), state);
   assert.throws(() => restoreState([{ type: "custom", customType: "tasks-state", data: { ...state, version: 2 } }]), /snapshot/);
   const corrupt = structuredClone(state);
   corrupt.tasks.push({ ...corrupt.tasks[0] });
@@ -185,12 +187,25 @@ test("all four views preserve ancestry and waiting parents while hiding terminal
   const { state, root, leaf, next } = nestedPlan();
   assert.deepEqual(treeLines(state, "hidden"), []);
   const active = treeLines(state, "active");
-  assert.equal(active.length, 3);
-  assert.match(active[0], new RegExp(root));
-  assert.match(active[2], new RegExp(leaf));
+  const branch = state.tasks[1].id;
+  assert.deepEqual(active, [`… [${root}] Build feature`, `  … [${branch}] Implement`, `    ▶ [${leaf}] Test`]);
+  assert.deepEqual(treeLines(state, "all", "text"), [
+    `waiting [${root}] Build feature`,
+    `  waiting [${branch}] Implement`,
+    `    active [${leaf}] Test`,
+    `future [${next}] Ship`,
+  ]);
   assert.equal(treeLines(state, "incomplete").length, 4);
   const closed = transition(state, { action: "cancel", id: leaf, ancestorOutcomes: Object.fromEntries(closingParents(state, leaf).map((id) => [id, "Done."])) });
   assert.equal(treeLines(closed, "incomplete").length, 1);
   assert.match(treeLines(closed, "active")[0], new RegExp(next));
   assert.equal(treeLines(closed, "all").length, 4);
+  assert.deepEqual(treeLines(closed, "all", "text"), [
+    `completed [${root}] Build feature`,
+    `  completed [${branch}] Implement`,
+    `    cancelled [${leaf}] Test`,
+    `active [${next}] Ship`,
+  ]);
+  assert.equal(reminder(closed), `[Tasks] Active [${next}] Ship`);
+  assert.equal(reminder(emptyState()), "[Tasks] No active task.");
 });
