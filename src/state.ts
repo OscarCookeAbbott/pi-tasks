@@ -176,7 +176,7 @@ export function closingParents(state: TaskState, id: string): string[] {
 
 export function reminder(state: TaskState): string {
   const active = activeTask(state);
-  if (!active) return "[Tasks] No active task.";
+  if (!active) return "No active task.";
   const path: string[] = [];
   let parent = active.parent;
   while (parent !== null) {
@@ -185,7 +185,7 @@ export function reminder(state: TaskState): string {
     parent = task.parent;
   }
   const closing = closingParents(state, active.id);
-  return `[Tasks] Active [${active.id}] ${active.title}${path.length ? ` | Parents: ${path.join(" / ")}` : ""}${closing.length ? ` | ancestorOutcomes: ${closing.map((id) => `[${id}]`).join(", ")}` : ""}`;
+  return `Active task [${active.id}]: ${active.title}${path.length ? ` | Parents: ${path.join(" / ")}` : ""}${closing.length ? ` | ancestorOutcomes: ${closing.map((id) => `[${id}]`).join(", ")}` : ""}`;
 }
 
 export function validateState(state: TaskState): void {

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
-import { activeTask, emptyState, reminder, restoreState, terminal, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
+import { activeTask, closingParents, emptyState, reminder, restoreState, terminal, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
 
 const id = Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Immutable two-character task ID" });
 const parent = Type.Optional(Type.Union([id, Type.Null()], { description: "Existing parent ID; null means root" }));
@@ -23,7 +23,7 @@ const parameters = Type.Object({
 }, { additionalProperties: false });
 
 const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted" } as const;
-const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state), display: false });
+const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state), display: true });
 const progress = (state: TaskState) => `${state.tasks.filter(terminal).length}/${state.tasks.length}`;
 
 export default function tasksExtension(pi: ExtensionAPI): void {
@@ -32,6 +32,11 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   let restoreError: string | undefined;
   let skipStartingUser = false;
   let cadence = new ReminderCadence();
+
+  pi.registerMessageRenderer("tasks-reminder", (message, _options, theme) => {
+    const text = typeof message.content === "string" ? message.content : message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
+    return new Text(theme.fg("toolOutput", text), 0, 0);
+  });
 
   function persist(): void {
     pi.appendEntry("tasks-state", structuredClone(state));
@@ -46,7 +51,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     ctx.ui.setWidget("tasks", (_tui, theme) => ({
       render(width: number): string[] {
         const lines = treeLines(state);
-        const heading = truncateToWidth(theme.fg("muted", `Tasks · ${progress(state)} · /tasks`), width);
+        const heading = truncateToWidth(theme.fg("muted", `Tasks · ${progress(state)} complete`), width);
         if (!lines.length) return [heading];
         const activeIndex = lines.findIndex((line) => line.trimStart().startsWith("▶"));
         const start = Math.max(0, activeIndex - 2);
@@ -132,8 +137,13 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (restoreError) throw new Error(`Tasks state is unavailable: ${restoreError}`);
       const previous = state;
       let response: string;
+      let checkpoint: string;
+      const affectedIds: string[] = [];
       if (params.action === "list") {
         response = treeLines(state, params.visibility ?? "all", "text").join("\n") || "No tasks in this view.";
+        const active = activeTask(state);
+        const closing = active ? closingParents(state, active.id) : [];
+        checkpoint = params.visibility === "hidden" ? reminder(state) : closing.length ? `ancestorOutcomes: ${closing.map((id) => `[${id}]`).join(", ")}` : "";
       } else {
         state = transition(state, params as Action);
         try {
@@ -143,30 +153,44 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           throw error;
         }
         const changed = params.action === "add" ? state.tasks.find((task) => !previous.tasks.some((old) => old.id === task.id))! : state.tasks.find((task) => task.id === params.id)!;
-        const verb = { add: "Added", move: "Moved", edit: "Updated", complete: "Completed", cancel: "Cancelled" }[params.action];
-        response = `[${changed.id}] ${changed.title}`;
-        if (changed.status === "waiting") {
-          const pending = changed.disposition === "completed" ? "completion" : "cancellation";
-          response = `Waiting ${response} (${pending} pending)`;
-        } else response = `${verb} ${response}`;
-        if (changed.outcome) response += `\nOutcome: ${changed.outcome}`;
+        const verb = { add: "added", move: "moved", edit: "updated", complete: "completed", cancel: "cancelled" }[params.action];
+        const status = changed.status === "waiting" ? `waiting (${changed.disposition === "completed" ? "completion" : "cancellation"} pending)` : verb;
+        response = `Task [${changed.id}] ${status}: ${changed.title}`;
+        affectedIds.push(changed.id);
+        if (params.action === "add" || params.action === "move") {
+          if (params.parent !== undefined) response += `\nParent: ${changed.parent === null ? "root" : `[${changed.parent}]`}`;
+          if (params.before !== undefined) response += `\nPosition: before sibling [${params.before}]`;
+          if (params.after !== undefined) response += `\nPosition: after sibling [${params.after}]`;
+        }
         const closed = state.tasks.filter((task) => task.id !== changed.id && previous.tasks.find((old) => old.id === task.id)?.status === "waiting" && (task.status === "completed" || task.status === "cancelled"));
-        for (const task of closed) response += `\n${task.status === "completed" ? "Completed" : "Cancelled"} [${task.id}]: ${task.outcome}`;
+        for (const task of closed) {
+          response += `\nTask [${task.id}] ${task.status}: ${task.title}`;
+          affectedIds.push(task.id);
+        }
+        checkpoint = reminder(state);
         updateWidget(ctx);
       }
       cadence.reset();
       return {
-        content: [{ type: "text", text: `${response}\n${reminder(state)}` }],
-        details: { response, state: structuredClone(state) },
+        content: [{ type: "text", text: [response, checkpoint].filter(Boolean).join("\n") }],
+        details: { response, state: structuredClone(state), affectedIds },
       };
     },
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", `tasks ${args.action}`) + (args.id ? ` [${args.id}]` : ""), 0, 0);
     },
     renderResult(result, { expanded }, theme) {
-      const details = result.details as { response: string; state: TaskState } | undefined;
-      if (!details) return new Text(result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n"), 0, 0);
-      const text = expanded ? `${details.response}\n${treeLines(details.state, "all").join("\n")}` : details.response;
+      const details = result.details as { response: string; state: TaskState; affectedIds?: string[] } | undefined;
+      if (typeof details?.response !== "string") return new Text(result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n"), 0, 0);
+      const lines = [details.response];
+      if (expanded) {
+        for (const task of details.state.tasks.filter((task) => details.affectedIds?.includes(task.id))) {
+          if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`[${task.id}] Own work: ${task.ownOutcome}`);
+          if (task.outcome) lines.push(`[${task.id}] Outcome: ${task.outcome}`);
+        }
+        lines.push(...treeLines(details.state, "all"));
+      }
+      const text = lines.join("\n");
       return new Text(theme.fg("muted", text), 0, 0);
     },
   });
@@ -213,7 +237,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
             const lines = treeLines(state, "all");
             const height = Math.max(1, tui.terminal.rows - 6);
             offset = Math.min(offset, Math.max(0, lines.length - height));
-            return [theme.fg("accent", `Tasks · ${progress(state)} · ↑↓ / PgUp PgDn · Esc to close`), ...((lines.length ? lines : ["No tasks."]).slice(offset, offset + height).map((line) => truncateToWidth(line, width)))].map((line) => truncateToWidth(line, width));
+            return [theme.fg("accent", `Tasks · ${progress(state)} complete · ↑↓ / PgUp PgDn · Esc to close`), ...((lines.length ? lines : ["No tasks."]).slice(offset, offset + height).map((line) => truncateToWidth(line, width)))].map((line) => truncateToWidth(line, width));
           },
           handleInput(data) {
             if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return done();

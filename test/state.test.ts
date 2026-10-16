@@ -64,7 +64,7 @@ test("final child closes multiple ancestors with mandatory summaries in one atom
   const { state, root, branch, leaf, next } = nestedPlan();
   assert.equal(activeTask(state)?.id, leaf);
   assert.deepEqual(closingParents(state, leaf), [branch, root]);
-  assert.equal(reminder(state), `[Tasks] Active [${leaf}] Test | Parents: [${root}] Build feature / [${branch}] Implement | ancestorOutcomes: [${branch}], [${root}]`);
+  assert.equal(reminder(state), `Active task [${leaf}]: Test | Parents: [${root}] Build feature / [${branch}] Implement | ancestorOutcomes: [${branch}], [${root}]`);
   const unchanged = structuredClone(state);
   assert.throws(() => transition(state, { action: "complete", id: leaf, outcome: "Tests pass.", ancestorOutcomes: { [branch]: "Branch done." } }), (error: unknown) => error instanceof Error && error.message.includes(`[${root}] Build feature`));
   assert.deepEqual(state, unchanged);
@@ -206,6 +206,6 @@ test("all four views preserve ancestry and waiting parents while hiding terminal
     `    cancelled [${leaf}] Test`,
     `active [${next}] Ship`,
   ]);
-  assert.equal(reminder(closed), `[Tasks] Active [${next}] Ship`);
-  assert.equal(reminder(emptyState()), "[Tasks] No active task.");
+  assert.equal(reminder(closed), `Active task [${next}]: Ship`);
+  assert.equal(reminder(emptyState()), "No active task.");
 });
