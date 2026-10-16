@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+- Highlight task IDs and titles in call headers; show add titles inline and shorten UI acknowledgements without removing titles from model feedback or placement details.
+- Give reminder headings bold, high-contrast styling while preserving themed backgrounds and padding.
+
 ## 0.4.1
 
 - Lead tool descriptions and prompt summaries with substantive work and outcome tracking, without requiring a pre-planned multi-step sequence.

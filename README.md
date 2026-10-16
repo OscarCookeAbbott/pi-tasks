@@ -10,7 +10,7 @@ Requires Node 22.19 or newer and Pi. Tested against **Pi 1.2.0**; older Pi relea
 pi install git:github.com/OscarCookeAbbott/pi-tasks
 ```
 
-Start a new session or run `/reload`. For a pinned release, append `@v0.4.1` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
+Start a new session or run `/reload`. For a pinned release, append `@v0.4.2` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
 
 Use `pi install --local <source>` for a project-scoped installation; Pi loads it after project trust is granted. To uninstall:
 
@@ -31,7 +31,7 @@ Do not also keep a copied version under `~/.pi/agent/extensions/`: it would regi
 
 The widget shows at most eight task rows, centred near the active task. The full browser is available even when the widget is hidden. Headers show closed/total counts such as `Tasks · 3/4 complete`, without a redundant slash-command hint; completed and cancelled tasks both count as closed, including parent tasks. This is a task count, not a work estimate.
 
-Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility.
+Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility. Call headers highlight task IDs and titles. For add calls, the UI result simply says `Task [ab] added.` (plus explicit placement details); model-facing acknowledgements still include the title. Reminder headings are bold and high-contrast.
 
 ## Agent tool
 

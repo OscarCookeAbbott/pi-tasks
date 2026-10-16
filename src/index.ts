@@ -36,7 +36,8 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   pi.registerMessageRenderer("tasks-reminder", (message, { outputPad }, theme) => {
     const text = typeof message.content === "string" ? message.content : message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
     const box = new Box(outputPad ?? 1, 1, (line) => theme.bg("customMessageBg", line));
-    box.addChild(new Text(theme.fg("customMessageText", text), 0, 0));
+    const [heading, ...body] = text.split("\n");
+    box.addChild(new Text(theme.fg("toolTitle", theme.bold(heading!)) + (body.length ? `\n${theme.fg("customMessageText", body.join("\n"))}` : ""), 0, 0));
     return box;
   });
 
@@ -139,6 +140,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (restoreError) throw new Error(`Tasks state is unavailable: ${restoreError}`);
       const previous = state;
       let response: string;
+      let displayResponse: string | undefined;
       let checkpoint: string;
       const affectedIds: string[] = [];
       if (params.action === "list") {
@@ -159,11 +161,14 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         const status = changed.status === "waiting" ? `waiting (${changed.disposition === "completed" ? "completion" : "cancellation"} pending)` : verb;
         response = `Task [${changed.id}] ${status}: ${changed.title}`;
         affectedIds.push(changed.id);
+        const placement: string[] = [];
         if (params.action === "add" || params.action === "move") {
-          if (params.parent !== undefined) response += `\nParent: ${changed.parent === null ? "root" : `[${changed.parent}]`}`;
-          if (params.before !== undefined) response += `\nPosition: before sibling [${params.before}]`;
-          if (params.after !== undefined) response += `\nPosition: after sibling [${params.after}]`;
+          if (params.parent !== undefined) placement.push(`Parent: ${changed.parent === null ? "root" : `[${changed.parent}]`}`);
+          if (params.before !== undefined) placement.push(`Position: before sibling [${params.before}]`);
+          if (params.after !== undefined) placement.push(`Position: after sibling [${params.after}]`);
         }
+        if (placement.length) response += `\n${placement.join("\n")}`;
+        if (params.action === "add") displayResponse = [`Task [${changed.id}] added.`, ...placement].join("\n");
         const closed = state.tasks.filter((task) => task.id !== changed.id && previous.tasks.find((old) => old.id === task.id)?.status === "waiting" && (task.status === "completed" || task.status === "cancelled"));
         for (const task of closed) {
           response += `\nTask [${task.id}] ${task.status}: ${task.title}`;
@@ -175,15 +180,20 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       cadence.reset();
       return {
         content: [{ type: "text", text: [response, checkpoint].filter(Boolean).join("\n") }],
-        details: { response, state: structuredClone(state), affectedIds },
+        details: { response, displayResponse, state: structuredClone(state), affectedIds },
       };
     },
     renderCall(args, theme) {
-      return new Text(theme.fg("toolTitle", theme.bold("tasks")) + theme.fg("muted", ` ${args.action ?? "..."}${args.id ? ` [${args.id}]` : ""}`), 0, 0);
+      return new Text(
+        theme.fg("toolTitle", theme.bold("tasks")) + theme.fg("muted", ` ${args.action ?? "..."}`)
+        + (args.id ? theme.fg("accent", ` [${args.id}]`) : "")
+        + (args.title ? theme.fg("accent", ` ${args.title}`) : ""),
+        0, 0,
+      );
     },
     renderResult(result, { expanded }, theme, context) {
       const color = context?.isError ? "error" : "toolOutput";
-      const details = result.details as { response: string; state: TaskState; affectedIds?: string[] } | undefined;
+      const details = result.details as { response: string; displayResponse?: string; state: TaskState; affectedIds?: string[] } | undefined;
       if (typeof details?.response !== "string") return new Text(theme.fg(color, result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n")), 0, 0);
       const lines: string[] = [];
       if (expanded) {
@@ -193,7 +203,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         }
         lines.push(...treeLines(details.state, "all"));
       }
-      return new Text(theme.fg(color, details.response) + (lines.length ? `\n${theme.fg("muted", lines.join("\n"))}` : ""), 0, 0);
+      return new Text(theme.fg(color, details.displayResponse ?? details.response) + (lines.length ? `\n${theme.fg("muted", lines.join("\n"))}` : ""), 0, 0);
     },
   });
 

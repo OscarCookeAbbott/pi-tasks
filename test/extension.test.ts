@@ -62,16 +62,24 @@ function harness(settings: unknown = {}) {
   };
 }
 
-test("task calls use bold names, muted arguments and standard result colours", async () => {
+test("task calls use bold names, highlighted arguments and standard result colours", async () => {
   const h = harness();
   const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
   const renderCall = h.tool.renderCall! as Function;
-  assert.equal(renderCall({ action: "edit", id: "ab" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> edit [ab]</muted>");
+  assert.equal(renderCall({ action: "edit", id: "ab" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> edit</muted><accent> [ab]</accent>");
+  assert.equal(renderCall({ action: "add", title: "Work" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> add</muted><accent> Work</accent>");
   assert.equal(renderCall({}, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> ...</muted>");
   const result = await h.call({ action: "add", title: "Work" });
   const styles: string[] = [];
   const resultTheme = { fg: (color: string, text: string) => { styles.push(color); return text; } };
   const renderResult = h.tool.renderResult! as Function;
+  const summary = renderResult(result, { expanded: false }, { fg: (_color: string, text: string) => text }, { isError: false }).render(200).join("\n").trimEnd();
+  assert.equal(summary, `Task [${result.details!.affectedIds[0]}] added.`);
+  assert.match(result.content[0].type === "text" ? result.content[0].text : "", /added: Work/);
+  const child = await h.call({ action: "add", title: "More\nwork", parent: result.details!.affectedIds[0] });
+  const childSummary = renderResult(child, { expanded: false }, { fg: (_color: string, text: string) => text }, { isError: false }).render(200).map((line: string) => line.trimEnd()).join("\n");
+  assert.equal(childSummary, `Task [${child.details!.affectedIds[0]}] added.\nParent: [${result.details!.affectedIds[0]}]`);
+  assert.match(child.content[0].type === "text" ? child.content[0].text : "", /added: More\nwork/);
   renderResult(result, { expanded: true }, resultTheme, { isError: false });
   renderResult({ content: [{ type: "text", text: "Refused." }], details: {} }, { expanded: false }, resultTheme, { isError: true });
   assert.deepEqual(styles, ["toolOutput", "muted", "error"]);
@@ -268,15 +276,18 @@ test("completion resets the ticker for the next task and reminders render as vis
   const renderer = h.renderers.get("tasks-reminder")!;
   for (const outputPad of [0, 2]) {
     const styles: string[] = [];
+    const headings: string[] = [];
     const backgrounds: string[] = [];
     const theme = {
       fg: (color: string, text: string) => { styles.push(color); return text; },
       bg: (color: string, text: string) => { backgrounds.push(color); return text; },
+      bold: (text: string) => { headings.push(text); return text; },
     };
     const lines: string[] = renderer(message, { expanded: false, outputPad }, theme).render(200);
     assert.equal(lines.map((line) => line.trim()).filter(Boolean).join("\n"), message.content);
     assert.ok(lines.some((line) => line.startsWith(" ".repeat(outputPad) + message.content)));
-    assert.deepEqual(styles, ["customMessageText"]);
+    assert.deepEqual(styles, ["toolTitle"]);
+    assert.deepEqual(headings, [message.content]);
     assert.ok(backgrounds.length > 0 && backgrounds.every((color) => color === "customMessageBg"));
   }
 });
