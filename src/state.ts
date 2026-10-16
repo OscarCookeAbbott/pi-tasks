@@ -20,6 +20,7 @@ export type Status = "future" | "active" | "waiting" | "completed" | "cancelled"
 export interface Task {
   id: string;
   title: string;
+  description?: string;
   parent: string | null;
   status: Status;
   disposition?: "completed" | "cancelled";
@@ -34,9 +35,9 @@ export interface TaskState {
   noteVisibility: NoteVisibility;
 }
 export type Action =
-  | { action: "add"; title: string; parent?: string | null; before?: string; after?: string }
+  | { action: "add"; title: string; description?: string; parent?: string | null; before?: string; after?: string }
   | { action: "move"; id: string; parent?: string | null; before?: string; after?: string; ancestorOutcomes?: Record<string, string> }
-  | { action: "edit"; id: string; title: string }
+  | { action: "edit"; id: string; title?: string; description?: string }
   | { action: "complete"; id: string; outcome: string; ancestorOutcomes?: Record<string, string> }
   | { action: "cancel"; id: string; reason?: string; ancestorOutcomes?: Record<string, string> };
 
@@ -154,7 +155,7 @@ export function transition(state: TaskState, action: Action, seed?: string): Tas
       const index = insertionIndex(next, parent, action.before, action.after);
       const activeIndex = next.tasks.findIndex((task) => task.status === "active");
       if (activeIndex >= 0 ? index <= activeIndex : index < next.tasks.length) throw new Error("New tasks must be inserted after the execution frontier.");
-      next.tasks.splice(index, 0, { id: allocateId(next, seed), title: requiredText(action.title, "Title"), parent, status: "future" });
+      next.tasks.splice(index, 0, { id: allocateId(next, seed), title: requiredText(action.title, "Title"), ...(action.description === undefined ? {} : { description: action.description }), parent, status: "future" });
       break;
     }
     case "move": {
@@ -175,9 +176,16 @@ export function transition(state: TaskState, action: Action, seed?: string): Tas
       closeWaiting(next, action.ancestorOutcomes);
       break;
     }
-    case "edit":
-      findTask(next, action.id).title = requiredText(action.title, "Title");
+    case "edit": {
+      const task = findTask(next, action.id);
+      if (action.title === undefined && action.description === undefined) throw new Error("Specify a title or description to edit.");
+      if (action.description !== undefined) {
+        if (terminal(task)) throw new Error("Descriptions of closed tasks cannot be edited.");
+        task.description = action.description;
+      }
+      if (action.title !== undefined) task.title = requiredText(action.title, "Title");
       break;
+    }
     case "complete":
     case "cancel": {
       const task = findTask(next, action.id);
@@ -241,6 +249,7 @@ export function validateState(state: TaskState): void {
   for (const task of state.tasks) {
     if (!/^[0-9a-zA-Z]{2}$/.test(task.id) || seen.has(task.id)) throw new Error("Invalid or duplicate task ID.");
     requiredText(task.title, "Title");
+    if (task.description !== undefined && typeof task.description !== "string") throw new Error("Invalid task description.");
     if (!["future", "active", "waiting", "completed", "cancelled"].includes(task.status)) throw new Error("Invalid task status.");
     if (task.parent !== null) {
       const depth = path.indexOf(task.parent);
@@ -288,7 +297,7 @@ export function restoreState(entries: readonly { type: string; customType?: stri
 
 const singleLine = (text: string): string => stripVTControlCharacters(text).replace(/\s+/g, " ").replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
 
-export function treeLines(state: TaskState, visibility: Visibility = state.visibility, format: "display" | "text" = "display", noteVisibility: NoteVisibility = format === "text" ? "all" : (state.noteVisibility ?? "active")): string[] {
+export function treeLines(state: TaskState, visibility: Visibility = state.visibility, format: "display" | "text" | "full" = "display", noteVisibility: NoteVisibility = format === "display" ? (state.noteVisibility ?? "active") : "all"): string[] {
   if (visibility === "hidden") return [];
   const included = new Set(state.tasks.filter((task) => visibility === "all" || (visibility === "active" ? task.status === "active" : !terminal(task))).map((task) => task.id));
   for (const id of [...included]) {
@@ -315,11 +324,18 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
     const title = format === "display" ? singleLine(task.title) : task.title;
     return [
       `${"  ".repeat(depth)}${format === "text" ? task.status : symbols[task.status]} [${task.id}] ${title}`,
+      ...(format !== "display" && task.description?.trim() ? [`${"  ".repeat(depth + 1)}Description: ${task.description}`] : []),
+      ...(format === "full" ? [
+        ...(task.status === "waiting" ? [`${"  ".repeat(depth + 1)}Pending: ${task.disposition}`] : []),
+        ...(task.ownOutcome ? [`${"  ".repeat(depth + 1)}Own work: ${task.ownOutcome}`] : []),
+        ...(task.outcome ? [`${"  ".repeat(depth + 1)}Outcome: ${task.outcome}`] : []),
+      ] : []),
       ...(notesByTask.get(task.id) ?? []).map((note) => {
         const retracted = note.retractedAt !== undefined;
-        const prefix = format === "text" ? `note ${retracted ? "retracted" : "active"}` : retracted ? "⊘ note" : "◆ note";
+        if (format === "full") return `${"  ".repeat(depth + 1)}${retracted ? "⊘" : "◆"} <${note.id}> · ${new Date(note.createdAt).toISOString()}\n${"  ".repeat(depth + 2)}${note.text}${retracted ? `\n${"  ".repeat(depth + 2)}Retracted: ${new Date(note.retractedAt!).toISOString()}\n${"  ".repeat(depth + 2)}Reason: ${note.reason}` : ""}`;
+        const prefix = format === "text" ? `note ${retracted ? "retracted" : "active"} [${note.id}]` : `${retracted ? "⊘" : "◆"} <${note.id}>`;
         const text = note.text + (retracted ? ` | Reason: ${note.reason}` : "");
-        return `${"  ".repeat(depth + 1)}${prefix} [${note.id}] ${format === "display" ? singleLine(text) : text}`;
+        return `${"  ".repeat(depth + 1)}${prefix} ${format === "display" ? singleLine(text) : text}`;
       }),
     ];
   });

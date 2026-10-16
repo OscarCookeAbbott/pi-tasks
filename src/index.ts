@@ -1,9 +1,9 @@
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
-import { activeTask, closingParents, describeNote, emptyState, findNote, reminder, restoreState, terminal, transition, transitionNote, treeLines, type Action, type NoteAction, type NoteVisibility, type TaskNote, type TaskState, type Visibility } from "./state.ts";
+import { activeTask, closingParents, describeNote, emptyState, findNote, reminder, restoreState, terminal, transition, transitionNote, treeLines, type Action, type NoteAction, type NoteVisibility, type Task, type TaskNote, type TaskState, type Visibility } from "./state.ts";
 
 const id = Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Immutable two-character task ID" });
 const parent = Type.Optional(Type.Union([id, Type.Null()], { description: "Existing parent ID; null means root" }));
@@ -14,7 +14,8 @@ const visibility = Type.Union([Type.Literal("hidden"), Type.Literal("active"), T
 const parameters = Type.Object({
   action: Type.Union((["add", "move", "edit", "complete", "cancel", "list"] as const).map((value) => Type.Literal(value))),
   id: Type.Optional(id),
-  title: Type.Optional(Type.String({ minLength: 1, description: "Required for add/edit" })),
+  title: Type.Optional(Type.String({ minLength: 1, description: "Required for add; optional for edit" })),
+  description: Type.Optional(Type.String({ description: "Optional task context for add/edit; empty clears. Editable while open." })),
   parent,
   ...position,
   outcome: Type.Optional(Type.String({ minLength: 1, description: "Required for complete: brief outcome summary" })),
@@ -24,9 +25,16 @@ const parameters = Type.Object({
 }, { additionalProperties: false });
 
 const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted", "◆": "toolOutput", "⊘": "dim" } as const;
-const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state), display: true });
+const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state).replace(/^Active task /, "Active task reminder "), display: true });
 const progress = (state: TaskState) => `${state.tasks.filter(terminal).length}/${state.tasks.length}`;
 const plainText = (text: string): string => stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+
+function compareValues(label: string, before: string, after: string): string[] {
+  return [["before:", before], ["after:", after]].map(([kind, text]) => {
+    const prefix = `${label} ${kind.padEnd(7)} `;
+    return prefix + text.replace(/\n/g, `\n${" ".repeat(prefix.length)}`);
+  });
+}
 
 export default function tasksExtension(pi: ExtensionAPI): void {
   let defaultVisibility: Visibility = "incomplete";
@@ -189,42 +197,52 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       cadence.reset();
       return {
         content: [{ type: "text", text: [response, checkpoint].filter(Boolean).join("\n") }],
-        details: { response, displayResponse, state: structuredClone(state), affectedIds },
+        details: { response, displayResponse, state: structuredClone(state), affectedIds, before: params.action === "edit" ? structuredClone(previous.tasks.find((task) => task.id === params.id)) : undefined },
       };
     },
     renderCall(args, theme) {
       return new Text(
-        theme.fg("toolTitle", theme.bold("tasks")) + theme.fg("muted", ` ${args.action ?? "..."}`)
-        + (args.id ? theme.fg("accent", ` [${args.id}]`) : "")
-        + (args.title ? theme.fg("accent", ` ${plainText(args.title)}`) : ""),
+        theme.fg("toolTitle", theme.bold("tasks")) + theme.fg(args.action ? "toolTitle" : "muted", ` ${args.action ?? "..."}`)
+        + (args.id ? theme.fg("accent", theme.bold(` [${args.id}]`)) : "")
+        + (args.title ? theme.fg("accent", theme.bold(` ${plainText(args.title)}`)) : ""),
         0, 0,
       );
     },
     renderResult(result, { expanded }, theme, context) {
       const color = context?.isError ? "error" : "toolOutput";
-      const details = result.details as { response: string; displayResponse?: string; state: TaskState; affectedIds?: string[] } | undefined;
+      const details = result.details as { response: string; displayResponse?: string; state: TaskState; affectedIds?: string[]; before?: Task } | undefined;
       if (typeof details?.response !== "string") return new Text(theme.fg(color, result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n")), 0, 0);
       const lines: string[] = [];
+      const comparisons: string[] = [];
+      if (expanded && details.before) {
+        const after = details.state.tasks.find((task) => task.id === details.before!.id);
+        if (after) {
+          comparisons.push(...compareValues(`Task [${after.id}]`, details.before.title, after.title));
+          if (details.before.description !== after.description) comparisons.push(...compareValues("Description", details.before.description || "(none)", after.description || "(none)"));
+        }
+      }
       if (expanded) {
         for (const task of details.state.tasks.filter((task) => details.affectedIds?.includes(task.id))) {
+          if (task.description?.trim() && (!details.before || details.before.description === task.description)) lines.push(`[${task.id}] Description: ${task.description}`);
           if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`[${task.id}] Own work: ${task.ownOutcome}`);
           if (task.outcome) lines.push(`[${task.id}] Outcome: ${task.outcome}`);
         }
         lines.push(...treeLines(details.state, "all"));
       }
-      return new Text(theme.fg(color, plainText(details.displayResponse ?? details.response)) + (lines.length ? `\n${theme.fg("muted", plainText(lines.join("\n")))}` : ""), 0, 0);
+      return new Text(theme.fg(color, plainText(comparisons.length ? comparisons.join("\n") : (details.displayResponse ?? details.response))) + (lines.length ? `\n${theme.fg("muted", plainText(lines.join("\n")))}` : ""), 0, 0);
     },
   });
 
   pi.registerTool({
     name: "task_notes",
     label: "Task Notes",
-    description: "Record, retract and read important task-bound notes: decisions, discoveries, constraints and risks. Recording permanently binds immutable text to the active task. Retract with a reason; read preserves the original text, owner and history. Note IDs have their own namespace.",
-    promptSnippet: "Record, retract and read important task-bound notes.",
+    description: "Record, retract, list and read important task-bound notes: decisions, discoveries, constraints and risks. Recording permanently binds immutable text to the active task. Retract with a reason; read preserves the original text, owner and history. Note IDs have their own namespace.",
+    promptSnippet: "Record, retract, list and read important task-bound notes.",
     promptGuidelines: ["Record important decisions, discoveries, constraints and risks with task_notes; use task completion for outcomes. Retract superseded notes rather than editing them; retracted notes are history, not current guidance."],
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("record"), Type.Literal("retract"), Type.Literal("read")]),
+      action: Type.Union([Type.Literal("record"), Type.Literal("retract"), Type.Literal("read"), Type.Literal("list")]),
       id: Type.Optional(Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Note ID; required for retract/read" })),
+      taskId: Type.Optional(Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Task ID; required for list" })),
       text: Type.Optional(Type.String({ minLength: 1, description: "Important note text; required for record" })),
       reason: Type.Optional(Type.String({ minLength: 1, description: "Reason for withdrawal; required for retract" })),
     }, { additionalProperties: false }),
@@ -232,8 +250,16 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async execute(_callId, params, _signal, _onUpdate, ctx) {
       if (restoreError) throw new Error(`Tasks state is unavailable: ${restoreError}`);
-      const fields = { record: ["action", "text"], retract: ["action", "id", "reason"], read: ["action", "id"] };
+      const fields = { record: ["action", "text"], retract: ["action", "id", "reason"], read: ["action", "id"], list: ["action", "taskId"] };
       if (Object.keys(params).some((key) => !fields[params.action].includes(key))) throw new Error(`Unexpected fields for note ${params.action}.`);
+      if (params.action === "list") {
+        if (!params.taskId) throw new Error("Task ID is required for listing notes.");
+        if (!state.tasks.some((task) => task.id === params.taskId)) throw new Error(`Unknown task ${params.taskId}.`);
+        const ids = state.notes.filter((note) => note.taskId === params.taskId).map((note) => note.id);
+        const response = JSON.stringify(ids);
+        cadence.reset();
+        return { content: [{ type: "text", text: response }], details: { response, taskId: params.taskId, ids } };
+      }
       if (params.action !== "record" && !params.id) throw new Error("Note ID is required for retract/read.");
       let note: TaskNote;
       if (params.action === "read") note = findNote(state, params.id!);
@@ -250,10 +276,10 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     },
     renderCall(args, theme) {
       return new Text(
-        theme.fg("toolTitle", theme.bold("task_notes")) + theme.fg("muted", ` ${args.action ?? "..."}`)
-        + (args.id ? theme.fg("accent", ` [${args.id}]`) : "")
-        + (args.text ? theme.fg("accent", ` ${plainText(args.text)}`) : "")
-        + (args.reason ? theme.fg("muted", ` — ${plainText(args.reason)}`) : ""),
+        theme.fg("toolTitle", theme.bold("task_notes")) + theme.fg(args.action ? "toolTitle" : "muted", ` ${args.action ?? "..."}`)
+        + (args.id || args.taskId ? theme.fg("accent", theme.bold(` [${args.id ?? args.taskId}]`)) : "")
+        + (args.text ? theme.fg("accent", theme.bold(` ${plainText(args.text)}`)) : "")
+        + (args.reason ? theme.fg("accent", theme.bold(` — ${plainText(args.reason)}`)) : ""),
         0, 0,
       );
     },
@@ -299,7 +325,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           return;
         }
         const notes = state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note)));
-        ctx.ui.notify(`[${task.id}] ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`, "info");
+        ctx.ui.notify(`[${task.id}] ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`, "info");
         return;
       }
       if (value) {
@@ -307,14 +333,15 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         return;
       }
       if (ctx.mode !== "tui") {
-        ctx.ui.notify(treeLines(state, "all", "text").join("\n") || "No tasks.", "info");
+        ctx.ui.notify(plainText(treeLines(state, "all", "full", "all").join("\n")) || "No tasks.", "info");
         return;
       }
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
         let offset = 0;
         return {
           render(width) {
-            const lines = treeLines(state, "all");
+            if (width < 1) return [];
+            const lines = treeLines(state, "all", "full", "all").flatMap((line) => plainText(line).replace(/\t/g, "   ").split("\n").flatMap((part) => wrapTextWithAnsi(part, width)));
             const height = Math.max(1, tui.terminal.rows - 6);
             offset = Math.min(offset, Math.max(0, lines.length - height));
             return [theme.fg("accent", `Tasks · ${progress(state)} complete · ↑↓ / PgUp PgDn · Esc to close`), ...((lines.length ? lines : ["No tasks."]).slice(offset, offset + height).map((line) => truncateToWidth(line, width)))].map((line) => truncateToWidth(line, width));

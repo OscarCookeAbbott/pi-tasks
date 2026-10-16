@@ -74,6 +74,80 @@ function harness(settings: unknown = {}) {
   };
 }
 
+test("task descriptions are optional, independently editable and show aligned before/after only on expansion", async () => {
+  const h = harness();
+  const original = await h.call({ action: "add", title: "Before title", description: "Before description\nsecond line" });
+  const id = original.details!.affectedIds[0];
+  const changed = await h.call({ action: "edit", id, title: "After title", description: "After description\nnew line" });
+  assert.equal(original.details!.state.tasks[0].description, "Before description\nsecond line");
+  const render = h.tool.renderResult! as Function;
+  const theme = { fg: (_color: string, text: string) => text };
+  const collapsed: string[] = render(changed, { expanded: false }, theme, {}).render(200);
+  assert.ok(!collapsed.join("\n").includes("Before title"));
+  assert.ok(!collapsed.join("\n").includes("Before description"));
+  const expanded: string[] = render(changed, { expanded: true }, theme, {}).render(200);
+  const before = expanded.find((line) => line.includes("Before title"))!;
+  const after = expanded.find((line) => line.includes("After title"))!;
+  assert.equal(before.indexOf("Before title"), after.indexOf("After title"));
+  assert.match(expanded.join("\n"), /Description before: Before description/);
+  assert.match(expanded.join("\n"), /Description after:  After description/);
+  assert.doesNotMatch(changed.content[0].type === "text" ? changed.content[0].text : "", /Before title|Before description/);
+  await h.call({ action: "edit", id, description: "Description only" });
+  const listed = await h.call({ action: "list" });
+  assert.match(listed.details!.response, /Description: Description only/);
+  assert.ok(!h.widgetLines().join("\n").includes("Description only"));
+  await h.command.handler(`show ${id}`, h.ctx);
+  assert.match(h.notifications.at(-1)!, /Description:\nDescription only/);
+  h.emit("session_tree");
+  assert.equal((await h.call({ action: "list" })).details!.state.tasks[0].description, "Description only");
+  await h.call({ action: "edit", id, description: "" });
+  assert.equal((await h.call({ action: "list" })).details!.state.tasks[0].description, "");
+});
+
+test("note listing returns only IDs in creation order, including retracted notes and hidden owners", async () => {
+  const h = harness();
+  const owner = (await h.call({ action: "add", title: "Owner" })).details!.affectedIds[0];
+  assert.deepEqual(JSON.parse((await h.note({ action: "list", taskId: owner })).details!.response), []);
+  const first = await h.note({ action: "record", text: "First" });
+  const second = await h.note({ action: "record", text: "Second" });
+  await h.note({ action: "retract", id: first.details!.note.id, reason: "Superseded" });
+  await h.call({ action: "complete", id: owner, outcome: "Done" });
+  const other = (await h.call({ action: "add", title: "Other" })).details!.affectedIds[0];
+  await h.note({ action: "record", text: "Other task's note" });
+  await h.command.handler("hidden", h.ctx);
+  await h.command.handler("notes none", h.ctx);
+  const count = h.entries.length;
+  const listed = await h.note({ action: "list", taskId: owner });
+  assert.equal(listed.details!.response, JSON.stringify([first.details!.note.id, second.details!.note.id]));
+  assert.deepEqual(listed.content, [{ type: "text", text: listed.details!.response }]);
+  assert.equal(h.entries.length, count);
+  await assert.rejects(h.note({ action: "list" }), /Task ID/);
+  const missing = ["00", "01", "02"].find((id) => id !== owner && id !== other)!;
+  await assert.rejects(h.note({ action: "list", taskId: missing }), /Unknown task/);
+  await assert.rejects(h.note({ action: "list", taskId: owner, text: "Unexpected" }), /Unexpected fields/);
+  await assert.rejects(h.note({ action: "record", taskId: other, text: "No parent override" }), /Unexpected fields/);
+});
+
+test("bare tasks inspection includes descriptions, outcomes and all full notes despite widget filters", async () => {
+  const h = harness();
+  const owner = (await h.call({ action: "add", title: "Closed owner", description: "Scope details" })).details!.affectedIds[0];
+  const note = await h.note({ action: "record", text: "Historical detail ".repeat(12) + "HISTORYEND\nSecond note line\tEnd" });
+  await h.note({ action: "retract", id: note.details!.note.id, reason: "Superseded history" });
+  await h.call({ action: "complete", id: owner, outcome: "Final outcome" });
+  await h.call({ action: "add", title: "Current work" });
+  await h.command.handler("hidden", h.ctx);
+  await h.command.handler("notes none", h.ctx);
+  let output: string[] = [];
+  Reflect.set(h.ctx.ui, "custom", async (factory: Function) => {
+    const view = factory({ terminal: { rows: 1000 }, requestRender() {} }, { fg: (_color: string, text: string) => text }, {}, () => {});
+    output = view.render(80);
+  });
+  await h.command.handler("", h.ctx);
+  assert.ok(output.every((line) => visibleWidth(line) <= 80 && !/[\r\n\t]/.test(line)));
+  const text = output.join("\n");
+  for (const expected of ["Closed owner", "Scope details", "Final outcome", note.details!.note.id, "HISTORYEND", "Second note line", "Superseded history", "Retracted:"]) assert.ok(text.includes(expected), expected);
+});
+
 test("task notes record, read and retract immutable context, including after task completion", async () => {
   const h = harness();
   assert.equal(h.noteTool.executionMode, "sequential");
@@ -115,9 +189,9 @@ test("task notes record, read and retract immutable context, including after tas
   assert.match(h.notifications.at(-1)!, new RegExp(`Note \\[${note.id}\\] retracted`));
   const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
   const header = (h.noteTool.renderCall! as Function)({ action: "read", id: note.id }, theme, {}).render(200).join("\n").trimEnd();
-  assert.equal(header, `<toolTitle><bold>task_notes</bold></toolTitle><muted> read</muted><accent> [${note.id}]</accent>`);
+  assert.equal(header, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> read</toolTitle><accent><bold> [${note.id}]</bold></accent>`);
   const retractionHeader = (h.noteTool.renderCall! as Function)({ action: "retract", id: note.id, reason: "Superseded" }, theme, {}).render(200).join("\n").trimEnd();
-  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><muted> retract</muted><accent> [${note.id}]</accent><muted> — Superseded</muted>`);
+  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> retract</toolTitle><accent><bold> [${note.id}]</bold></accent><accent><bold> — Superseded</bold></accent>`);
 });
 
 test("note visibility is independent, defaults on, persists and never exposes notes of filtered tasks", async () => {
@@ -133,7 +207,7 @@ test("note visibility is independent, defaults on, persists and never exposes no
   assert.equal(h.widgetLines()[0], "Tasks · 0/1 complete");
   for (const width of [1, 12, 80]) assert.ok(h.widgetLines(width).every((line) => !/[\r\n\t]/.test(line) && visibleWidth(line) <= width));
   await h.command.handler("notes all", h.ctx);
-  assert.ok(h.widgetLines().some((line) => /⊘ note.*Old decision/.test(line)));
+  assert.ok(h.widgetLines().some((line) => /⊘ <[0-9a-zA-Z]{2}>.*Old decision/.test(line)));
   h.emit("session_tree");
   assert.equal((await h.call({ action: "list" })).details!.state.noteVisibility, "all");
   await h.command.handler("notes none", h.ctx);
@@ -150,7 +224,7 @@ test("note visibility is independent, defaults on, persists and never exposes no
   await h.command.handler("notes all", h.ctx);
   await h.call({ action: "complete", id: owner, outcome: "Done" });
   await h.call({ action: "add", title: "Next" });
-  assert.ok(!h.widgetLines().some((line) => /note \[/.test(line)));
+  assert.ok(!h.widgetLines().some((line) => /^[\s]*[◆⊘] </.test(line)));
   await h.command.handler("all", h.ctx);
   assert.ok(h.widgetLines().some((line) => /Old decision/.test(line)));
   await h.command.handler("hidden", h.ctx);
@@ -165,7 +239,7 @@ test("a clipped widget never starts with notes whose task row is outside the win
   for (let index = 0; index < 9; index++) await h.note({ action: "record", text: `Discovery ${index}` });
   await h.call({ action: "complete", id: parent, outcome: "Own work done" });
   assert.equal(h.widgetLines()[1], `  ▶ [${child}] Child`);
-  assert.ok(!h.widgetLines().some((line) => /note \[/.test(line)));
+  assert.ok(!h.widgetLines().some((line) => /^[\s]*[◆⊘] </.test(line)));
 });
 
 test("notes follow branch snapshots and failed persistence rolls back recording, retraction and visibility", async () => {
@@ -210,8 +284,8 @@ test("task calls use bold names, highlighted arguments and standard result colou
   const h = harness();
   const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
   const renderCall = h.tool.renderCall! as Function;
-  assert.equal(renderCall({ action: "edit", id: "ab" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> edit</muted><accent> [ab]</accent>");
-  assert.equal(renderCall({ action: "add", title: "Work" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> add</muted><accent> Work</accent>");
+  assert.equal(renderCall({ action: "edit", id: "ab" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><toolTitle> edit</toolTitle><accent><bold> [ab]</bold></accent>");
+  assert.equal(renderCall({ action: "add", title: "Work" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><toolTitle> add</toolTitle><accent><bold> Work</bold></accent>");
   assert.equal(renderCall({}, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> ...</muted>");
   const result = await h.call({ action: "add", title: "Work" });
   const styles: string[] = [];
@@ -369,7 +443,7 @@ test("reminders default to thirty top-level events, preserve history, and refres
   h.emit("session_start");
   const initial = h.emit("before_agent_start", { messageType: "user" });
   assert.equal(initial.message.display, true);
-  assert.match(initial.message.content, /Active work/);
+  assert.match(initial.message.content, /^Active task reminder \[[0-9a-zA-Z]{2}\]: Active work/);
   h.emit("message_end", { message: { role: "user" } });
   for (let i = 0; i < 29; i++) h.emit("tool_result", { toolName: "read" });
   assert.equal(h.emit("turn_end", { entries: [] }), undefined);

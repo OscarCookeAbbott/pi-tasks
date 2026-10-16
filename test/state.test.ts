@@ -18,6 +18,30 @@ function nestedPlan(): { state: TaskState; root: string; branch: string; leaf: s
   return { state, root, branch, leaf, next };
 }
 
+test("optional task descriptions persist verbatim, edit independently and remain absent in old snapshots", () => {
+  const initial = transition(emptyState(), { action: "add", title: "Work", description: "  Scope\nacceptance criteria\n" }, "work");
+  const id = activeTask(initial)!.id;
+  const edited = transition(initial, { action: "edit", id, description: "Updated scope" });
+  assert.equal(initial.tasks[0].description, "  Scope\nacceptance criteria\n");
+  assert.equal(edited.tasks[0].title, "Work");
+  assert.equal(edited.tasks[0].description, "Updated scope");
+  assert.equal(edited.version, 2);
+  assert.ok(!treeLines(edited).join("\n").includes("Updated scope"));
+  assert.match(treeLines(edited, "all", "text").join("\n"), /Description: Updated scope/);
+  assert.equal(transition(edited, { action: "edit", id, description: "" }).tasks[0].description, "");
+  assert.throws(() => transition(edited, { action: "edit", id }), /title or description/);
+  for (const action of [{ action: "complete", id, outcome: "Done" }, { action: "cancel", id }] as const) {
+    const closed = transition(edited, action);
+    assert.equal(closed.tasks[0].description, "Updated scope");
+    assert.throws(() => transition(closed, { action: "edit", id, description: "Too late" }), /closed tasks/);
+  }
+  const old = { version: 1, tasks: [{ id: "ab", title: "Old", parent: null, status: "active" }], visibility: "all" };
+  assert.equal(restoreState([{ type: "custom", customType: "tasks-state", data: old }]).tasks[0].description, undefined);
+  const corrupt = structuredClone(edited);
+  Reflect.set(corrupt.tasks[0], "description", 42);
+  assert.throws(() => validateState(corrupt), /description/);
+});
+
 test("insertion, sibling reordering, and title edits preserve IDs and the single active task", () => {
   let [state, a] = add(emptyState(), "First");
   let b: string, c: string;

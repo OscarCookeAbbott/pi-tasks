@@ -77,12 +77,12 @@ test("note filters are subordinate to visible tasks, preserve ancestry and never
   assert.ok(!active.some((line) => /First discovery|Old decision/.test(line)));
   assert.ok(active.some((line) => /New discovery/.test(line)));
   assert.ok(active.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line)));
-  assert.ok(treeLines(state, "active", "display", "all").some((line) => /⊘ note.*Old decision.*Replaced/.test(line)));
+  assert.ok(treeLines(state, "active", "display", "all").some((line) => /⊘ <[0-9a-zA-Z]{2}>.*Old decision.*Replaced/.test(line)));
   assert.equal(treeLines(state, "active", "display", "none").length, 2);
   assert.deepEqual(treeLines(state, "hidden", "display", "all"), []);
   assert.ok(treeLines(state, "all").some((line) => /First discovery/.test(line)));
   state.noteVisibility = "none";
-  assert.ok(!treeLines(state, "all").some((line) => /note \[/.test(line)));
+  assert.ok(!treeLines(state, "all").some((line) => /^[\s]*[◆⊘] </.test(line)));
   const model = treeLines(state, "all", "text").join("\n");
   assert.match(model, /note retracted.*Old decision.*Replaced/);
   assert.equal(state.tasks.length, 3);

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- Add optional backward-compatible task descriptions, editable independently while open and clearable with an empty string.
+- Show aligned title/description before-and-after values in expanded task edit results without adding them to model feedback.
+- Add task_notes list(taskId), returning only note IDs in creation order, including retracted records.
+- Make bare /tasks a complete unfiltered, wrapped inspection of tasks, descriptions, outcomes and all note history; widget filters remain independent.
+- Use compact ◆ <id> / ⊘ <id> note rows, bold-accented primary arguments and readable actions.
+- Label periodic/restored/compaction messages as Active task reminder to distinguish them from actual task-operation checkpoints.
+
 ## 0.5.0
 
 - Add task_notes record/retract/read for important decisions, discoveries, constraints and risks; completion outcomes remain separate.

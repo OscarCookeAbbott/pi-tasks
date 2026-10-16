@@ -10,7 +10,7 @@ Requires Node 22.19 or newer and Pi. Tested against **Pi 1.2.0**; older Pi relea
 pi install git:github.com/OscarCookeAbbott/pi-tasks
 ```
 
-Start a new session or run `/reload`. For a pinned release, append `@v0.5.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
+Start a new session or run `/reload`. For a pinned release, append `@v0.6.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
 
 Use `pi install --local <source>` for a project-scoped installation; Pi loads it after project trust is granted. To uninstall:
 
@@ -22,17 +22,17 @@ Do not also keep a copied version under `~/.pi/agent/extensions/`: it would regi
 
 ## User interface
 
-- `/tasks`: browse the entire tree, including closed tasks. Use ↑/↓, Page Up/Down, and Escape.
+- `/tasks`: inspect every task, description, outcome and note (including retracted history), regardless of widget filters. Long content wraps rather than being clipped. Use ↑/↓, Page Up/Down, and Escape.
 - `/tasks hidden`: hide the persistent widget.
 - `/tasks active`: show the active task and its ancestor context.
 - `/tasks incomplete`: show active, future, and waiting tasks (default).
 - `/tasks all`: show every task.
 - `/tasks show ab`: inspect a task's status, parent, outcomes and note history.
-- `/tasks notes all|active|none`: independently control tree note visibility (default `active`, unretracted notes).
+- `/tasks notes all|active|none`: independently control compact-widget note visibility (default `active`, unretracted notes).
 
 The widget shows at most eight task/note rows, centred near the active task. The full browser is available even when the widget is hidden. Headers show closed/total counts such as `Tasks · 3/4 complete`, without a redundant slash-command hint; completed and cancelled tasks both count as closed, including parent tasks. This is a task count, not a work estimate.
 
-Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility. Call headers highlight task IDs and titles. For add calls, the UI result simply says `Task [ab] added.` (plus explicit placement details); model-facing acknowledgements still include the title. Reminder headings are bold and high-contrast.
+Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility. Call headers use bold-accented task IDs and primary text, with readable actions. Expanded edit results show aligned before/after titles and descriptions; this comparison metadata is never added to model feedback. For add calls, the UI result simply says `Task [ab] added.` (plus explicit placement details); model-facing acknowledgements still include the title. Reminder headings are bold and high-contrast.
 
 ## Agent tool
 
@@ -40,9 +40,9 @@ The `tasks` tool accepts:
 
 | Action | Fields |
 | --- | --- |
-| `add` | `title`; optional `parent`, `before`, `after` |
+| `add` | `title`; optional `description`, `parent`, `before`, `after` |
 | `list` | optional `visibility` (defaults to `all`; does not change the widget) |
-| `edit` | `id`, `title` |
+| `edit` | `id`; `title` and/or `description` |
 | `move` | `id`; `parent` and/or `before`/`after`; optional `ancestorOutcomes` |
 | `complete` | active `id`, brief `outcome`; optional `ancestorOutcomes` |
 | `cancel` | active/future `id`; optional `reason`, `ancestorOutcomes` |
@@ -52,6 +52,8 @@ Use the two-character IDs inside brackets, without brackets in tool arguments. I
 Additions default to root/end. Moves retain their parent when `parent` is omitted; `parent: null` moves to the root. Reparenting without a position appends under the new parent. Anchors must be siblings of the added/moved task; `after` means after the anchor's entire subtree. Specify at most one of `before` and `after`.
 
 Only wholly future subtrees can move. New tasks and moved subtrees must remain after the active task. Once the tree is finished, new root tasks can be appended, not inserted into completed history. Missing parents, cycles, self-anchors, closed-parent destinations, reopening, and arbitrary activation/skipping are rejected.
+
+Optional descriptions hold scope, context or acceptance criteria. They may be supplied on creation or edited independently while a task is open (future, active or waiting); an empty string clears them. Descriptions appear in model-facing lists, expanded results and explicit user inspection, not the compact widget. Old snapshots without descriptions remain valid without a schema migration.
 
 ### Parents and progression
 
@@ -90,20 +92,21 @@ Missing/blank summaries reject the entire operation without changing tasks. The 
 | `record` | `text`; automatically binds to the active task, failing if none is active |
 | `retract` | note `id`, brief `reason`; permanently withdraws the note without deleting its original text |
 | `read` | note `id`; returns full text, owning task, creation time and any retraction details |
+| `list` | `taskId`; returns only a JSON array of note IDs in creation order, including retracted notes (`[]` if empty) |
 
 Notes cannot be edited, reparented, deleted or reactivated. Retraction and reading remain available after the owning task closes. Record a new note for a changed decision and retract the old one, identifying the replacement in the reason if useful. Creation order is retained under each task; creation and retraction times are stored as epoch milliseconds and shown as UTC on read.
 
-Note IDs use their own 3,844-entry two-character base-62 namespace. Task and note IDs may coincide; the tool and `Task`/`Note` labels disambiguate them. Retracted IDs are never recycled within the current branch history.
+Note IDs use their own 3,844-entry two-character base-62 namespace. Task and note IDs may coincide; the tool and `Task`/`Note` labels disambiguate them. Compact TUI rows use `◆ <ab> text` for unretracted notes and `⊘ <ab> text` for retracted ones, distinct from tasks' square-bracket IDs. Tool arguments still take the bare ID. Retracted IDs are never recycled within the current branch history.
 
-Use `/tasks notes active` (default) for unretracted notes, `/tasks notes all` to include retracted history and reasons, or `/tasks notes none` to hide notes. These saved, user-only filters apply to the widget and tree browser; a note never appears unless its owning task is included by that view's task filter. `active` means unretracted, not only notes of the active task. Notes do not affect task counts, scheduling or completion.
+Use `/tasks notes active` (default) for unretracted notes, `/tasks notes all` to include retracted history and reasons, or `/tasks notes none` to hide notes. These saved, user-only filters apply only to the compact widget; a note never appears unless its owning task is included by that view's task filter. `active` means unretracted, not only notes of the active task. Notes do not affect task counts, scheduling or completion.
 
-Explicit inspection is independent of these display preferences: `tasks list` includes notes under its selected tasks with explicit active/retracted states, `/tasks show <task-id>` includes the task's full note history, and `task_notes read` always returns the requested record. There is no separate note-list operation.
+Explicit inspection is independent of these display preferences: `tasks list` includes notes under its selected tasks with explicit active/retracted states, `/tasks show <task-id>` includes the task's full note history, and `task_notes read` always returns the requested record. `task_notes list` is also independent of display preferences and does not repeat note text or status.
 
 ## Reminders and persistence
 
 Mutation acknowledgements retain task IDs and titles, e.g. `Task [ab] completed: Review feedback`, followed by a compact checkpoint: `Active task [cd]: Implement refinements`, its parent path, and any required `ancestorOutcomes`. Explicit positioning is a separate `Position: after sibling [xy]` or `before sibling` line; explicit parent changes use `Parent: [pq]` or `root`. Default placement is not narrated. Lists already show the active task and ancestry, so they append only required ancestor-summary IDs; a hidden list view still receives the full checkpoint. Outcomes are persisted and shown in expanded TUI results or `/tasks show <id>`, without echoing their text into model context.
 
-Workflow instructions live in the tool's prompt guidelines rather than repeating in each checkpoint. Other completed **top-level** tool calls and actual user messages count toward a **30-event** cadence by default. Nested calls (tools invoked internally by another tool, such as reads inside a `codemode` script) do not count separately. Every successful task or task-note tool call, including completion and note reads, resets the event counter. Quick task progress can therefore prevent the periodic threshold from being reached. Periodic reminders appear as visible custom messages at safe turn boundaries, using themed message backgrounds and bold headings like async-job completions; initial/restored state and compaction force a refresh. No timers, forced continuation turns, transient context edits, or rewriting old checkpoints are used. Widget visibility never disables reminders. Making reminders visible does not add model text or start extra turns.
+Workflow instructions live in the tool's prompt guidelines rather than repeating in each checkpoint. Other completed **top-level** tool calls and actual user messages count toward a **30-event** cadence by default. Nested calls (tools invoked internally by another tool, such as reads inside a `codemode` script) do not count separately. Every successful task or task-note tool call, including completion and note reads, resets the event counter. Quick task progress can therefore prevent the periodic threshold from being reached. Periodic reminders explicitly say `Active task reminder [id]: title` (the same text is sent to the agent and UI), distinguishing them from task-operation checkpoints. They appear as visible custom messages at safe turn boundaries, using themed message backgrounds and bold headings like async-job completions; initial/restored state and compaction force a refresh. No timers, forced continuation turns, transient context edits, or rewriting old checkpoints are used. Widget visibility never disables reminders. Making reminders visible does not add model text or start extra turns.
 
 Configure the interval and initial visibility in `~/.pi/agent/settings.json` (or trusted project `.pi/settings.json`):
 
