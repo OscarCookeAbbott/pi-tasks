@@ -1,8 +1,9 @@
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
-import { activeTask, closingParents, emptyState, reminder, restoreState, terminal, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
+import { activeTask, closingParents, describeNote, emptyState, findNote, reminder, restoreState, terminal, transition, transitionNote, treeLines, type Action, type NoteAction, type NoteVisibility, type TaskNote, type TaskState, type Visibility } from "./state.ts";
 
 const id = Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Immutable two-character task ID" });
 const parent = Type.Optional(Type.Union([id, Type.Null()], { description: "Existing parent ID; null means root" }));
@@ -22,13 +23,15 @@ const parameters = Type.Object({
   visibility: Type.Optional(visibility),
 }, { additionalProperties: false });
 
-const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted" } as const;
+const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted", "◆": "toolOutput", "⊘": "dim" } as const;
 const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state), display: true });
 const progress = (state: TaskState) => `${state.tasks.filter(terminal).length}/${state.tasks.length}`;
+const plainText = (text: string): string => stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 
 export default function tasksExtension(pi: ExtensionAPI): void {
   let defaultVisibility: Visibility = "incomplete";
-  let state = emptyState(defaultVisibility);
+  let defaultNoteVisibility: NoteVisibility = "active";
+  let state = emptyState(defaultVisibility, defaultNoteVisibility);
   let restoreError: string | undefined;
   let skipStartingUser = false;
   let cadence = new ReminderCadence();
@@ -57,7 +60,9 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         const heading = truncateToWidth(theme.fg("muted", `Tasks · ${progress(state)} complete`), width);
         if (!lines.length) return [heading];
         const activeIndex = lines.findIndex((line) => line.trimStart().startsWith("▶"));
-        const start = Math.max(0, activeIndex - 2);
+        let start = Math.max(0, activeIndex - 2);
+        while (start > 0 && /^[◆⊘]/.test(lines[start]?.trimStart() ?? "")) start--;
+        if (activeIndex - start >= 8) start = activeIndex;
         const shown = lines.slice(start, start + 8);
         return [
           heading,
@@ -71,12 +76,12 @@ export default function tasksExtension(pi: ExtensionAPI): void {
 
   function restore(ctx: ExtensionContext): void {
     try {
-      state = restoreState(ctx.sessionManager.getBranch(), defaultVisibility);
+      state = restoreState(ctx.sessionManager.getBranch(), defaultVisibility, defaultNoteVisibility);
       restoreError = undefined;
     } catch (error) {
       // Never replace an unreadable durable snapshot with an empty one.
       restoreError = error instanceof Error ? error.message : String(error);
-      state = emptyState(defaultVisibility);
+      state = emptyState(defaultVisibility, defaultNoteVisibility);
       ctx.ui.notify(`Tasks restoration failed: ${restoreError}`, "error");
     }
     cadence.force();
@@ -92,12 +97,16 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (configuredVisibility !== undefined && !["hidden", "active", "incomplete", "all"].includes(configuredVisibility as string)) {
         throw new Error("tasks.defaultVisibility must be hidden, active, incomplete, or all.");
       }
+      const configuredNotes = (settings as { tasks?: { defaultNoteVisibility?: unknown } }).tasks?.defaultNoteVisibility;
+      if (configuredNotes !== undefined && !["all", "active", "none"].includes(configuredNotes as string)) throw new Error("tasks.defaultNoteVisibility must be all, active, or none.");
       defaultVisibility = (configuredVisibility ?? "incomplete") as Visibility;
+      defaultNoteVisibility = (configuredNotes ?? "active") as NoteVisibility;
       cadence = new ReminderCadence(interval);
     } catch (error) {
       defaultVisibility = "incomplete";
+      defaultNoteVisibility = "active";
       cadence = new ReminderCadence();
-      ctx.ui.notify(`Tasks config: ${error instanceof Error ? error.message : String(error)} Using the default interval of 30 and visibility incomplete.`, "warning");
+      ctx.ui.notify(`Tasks config: ${error instanceof Error ? error.message : String(error)} Using the default interval of 30 and visibility incomplete; notes active.`, "warning");
     }
     restore(ctx);
   });
@@ -120,7 +129,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   });
   pi.on("tool_result", (event) => {
     // Task results already carry a checkpoint; nested calls belong to the outer tool decision.
-    if (!event.parentToolCallId && event.toolName !== "tasks" && activeTask(state) && !restoreError) cadence.tick();
+    if (!event.parentToolCallId && event.toolName !== "tasks" && event.toolName !== "task_notes" && activeTask(state) && !restoreError) cadence.tick();
   });
   pi.on("turn_end", (event) => {
     if (!activeTask(state) || restoreError || !cadence.take()) return;
@@ -130,9 +139,9 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "tasks",
     label: "Tasks",
-    description: "Plan and track substantive work and outcomes with tasks. Manage a forward-only task tree. Add, list, edit, move future subtrees (position and/or parent), complete the active task with an outcome, or cancel active/future tasks. Completing/cancelling a parent with unfinished children makes it waiting and advances into its children. Final child closure automatically closes waiting ancestors; include ancestorOutcomes for each completing ancestor. Cancelled parents do not cancel their children. IDs never change. Anchors must be siblings; additions default to root/end, moves retain their parent unless specified. Only the future portion can be reordered.",
-    promptSnippet: "Plan and track substantive work and outcomes with tasks.",
-    promptGuidelines: ["Plan and track substantive work and outcomes with tasks. Work on only the active task; complete it with a brief outcome or cancel it before advancing. Supply ancestorOutcomes when the final child closes a waiting parent."],
+    description: "Plan and track substantive work, outcomes and notes with tasks. Manage a forward-only task tree. Add, list, edit, move future subtrees (position and/or parent), complete the active task with an outcome, or cancel active/future tasks. Completing/cancelling a parent with unfinished children makes it waiting and advances into its children. Final child closure automatically closes waiting ancestors; include ancestorOutcomes for each completing ancestor. Cancelled parents do not cancel their children. IDs never change. Anchors must be siblings; additions default to root/end, moves retain their parent unless specified. Only the future portion can be reordered.",
+    promptSnippet: "Plan and track substantive work, outcomes and notes with tasks.",
+    promptGuidelines: ["Plan and track substantive work, outcomes and notes with tasks. Work on only the active task; complete it with a brief outcome or cancel it before advancing. Supply ancestorOutcomes when the final child closes a waiting parent."],
     parameters,
     executionMode: "sequential",
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -187,7 +196,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       return new Text(
         theme.fg("toolTitle", theme.bold("tasks")) + theme.fg("muted", ` ${args.action ?? "..."}`)
         + (args.id ? theme.fg("accent", ` [${args.id}]`) : "")
-        + (args.title ? theme.fg("accent", ` ${args.title}`) : ""),
+        + (args.title ? theme.fg("accent", ` ${plainText(args.title)}`) : ""),
         0, 0,
       );
     },
@@ -203,14 +212,61 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         }
         lines.push(...treeLines(details.state, "all"));
       }
-      return new Text(theme.fg(color, details.displayResponse ?? details.response) + (lines.length ? `\n${theme.fg("muted", lines.join("\n"))}` : ""), 0, 0);
+      return new Text(theme.fg(color, plainText(details.displayResponse ?? details.response)) + (lines.length ? `\n${theme.fg("muted", plainText(lines.join("\n")))}` : ""), 0, 0);
+    },
+  });
+
+  pi.registerTool({
+    name: "task_notes",
+    label: "Task Notes",
+    description: "Record, retract and read important task-bound notes: decisions, discoveries, constraints and risks. Recording permanently binds immutable text to the active task. Retract with a reason; read preserves the original text, owner and history. Note IDs have their own namespace.",
+    promptSnippet: "Record, retract and read important task-bound notes.",
+    promptGuidelines: ["Record important decisions, discoveries, constraints and risks with task_notes; use task completion for outcomes. Retract superseded notes rather than editing them; retracted notes are history, not current guidance."],
+    parameters: Type.Object({
+      action: Type.Union([Type.Literal("record"), Type.Literal("retract"), Type.Literal("read")]),
+      id: Type.Optional(Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Note ID; required for retract/read" })),
+      text: Type.Optional(Type.String({ minLength: 1, description: "Important note text; required for record" })),
+      reason: Type.Optional(Type.String({ minLength: 1, description: "Reason for withdrawal; required for retract" })),
+    }, { additionalProperties: false }),
+    executionMode: "sequential",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    async execute(_callId, params, _signal, _onUpdate, ctx) {
+      if (restoreError) throw new Error(`Tasks state is unavailable: ${restoreError}`);
+      const fields = { record: ["action", "text"], retract: ["action", "id", "reason"], read: ["action", "id"] };
+      if (Object.keys(params).some((key) => !fields[params.action].includes(key))) throw new Error(`Unexpected fields for note ${params.action}.`);
+      if (params.action !== "record" && !params.id) throw new Error("Note ID is required for retract/read.");
+      let note: TaskNote;
+      if (params.action === "read") note = findNote(state, params.id!);
+      else {
+        const previous = state;
+        state = transitionNote(state, params as NoteAction);
+        try { persist(); } catch (error) { state = previous; throw error; }
+        note = params.action === "record" ? state.notes.at(-1)! : findNote(state, params.id!);
+        updateWidget(ctx);
+      }
+      const response = params.action === "read" ? describeNote(state, note) : `Note [${note.id}] ${params.action === "record" ? "recorded" : "retracted"} for task [${note.taskId}].`;
+      cadence.reset();
+      return { content: [{ type: "text", text: response }], details: { response, note: structuredClone(note) } };
+    },
+    renderCall(args, theme) {
+      return new Text(
+        theme.fg("toolTitle", theme.bold("task_notes")) + theme.fg("muted", ` ${args.action ?? "..."}`)
+        + (args.id ? theme.fg("accent", ` [${args.id}]`) : "")
+        + (args.text ? theme.fg("accent", ` ${plainText(args.text)}`) : "")
+        + (args.reason ? theme.fg("muted", ` — ${plainText(args.reason)}`) : ""),
+        0, 0,
+      );
+    },
+    renderResult(result, _options, theme, context) {
+      const text = result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
+      return new Text(theme.fg(context?.isError ? "error" : "toolOutput", plainText(text)), 0, 0);
     },
   });
 
   pi.registerCommand("tasks", {
-    description: "Browse tasks, set hidden/active/incomplete/all visibility, or show <id> details",
+    description: "Browse tasks, set task visibility or notes all|active|none, or show <id> details",
     getArgumentCompletions(prefix) {
-      return ["hidden", "active", "incomplete", "all", "show "].flatMap((value) => value.startsWith(prefix) ? [{ value, label: value }] : []);
+      return ["hidden", "active", "incomplete", "all", "show ", "notes all", "notes active", "notes none"].flatMap((value) => value.startsWith(prefix) ? [{ value, label: value }] : []);
     },
     async handler(args, ctx) {
       if (restoreError) {
@@ -218,6 +274,17 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         return;
       }
       const value = args.trim();
+      if (value.startsWith("notes")) {
+        if (!["notes all", "notes active", "notes none"].includes(value)) {
+          ctx.ui.notify("Usage: /tasks notes all|active|none", "error");
+          return;
+        }
+        const previous = state;
+        state = { ...state, noteVisibility: value.slice(6) as NoteVisibility };
+        try { persist(); } catch (error) { state = previous; throw error; }
+        updateWidget(ctx);
+        return;
+      }
       if (["hidden", "active", "incomplete", "all"].includes(value)) {
         const previous = state;
         state = { ...state, visibility: value as Visibility };
@@ -231,11 +298,12 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           ctx.ui.notify("Unknown task ID.", "error");
           return;
         }
-        ctx.ui.notify(`[${task.id}] ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}`, "info");
+        const notes = state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note)));
+        ctx.ui.notify(`[${task.id}] ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`, "info");
         return;
       }
       if (value) {
-        ctx.ui.notify("Usage: /tasks [hidden|active|incomplete|all|show <id>]", "error");
+        ctx.ui.notify("Usage: /tasks [hidden|active|incomplete|all|notes all|notes active|notes none|show <id>]", "error");
         return;
       }
       if (ctx.mode !== "tui") {

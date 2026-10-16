@@ -177,7 +177,7 @@ test("snapshots restore the supplied branch, are isolated, and fail closed on co
   assert.deepEqual(restoreState([]), emptyState());
   assert.deepEqual(restoreState([], "hidden"), emptyState("hidden"));
   assert.deepEqual(restoreState(entries, "hidden"), state);
-  assert.throws(() => restoreState([{ type: "custom", customType: "tasks-state", data: { ...state, version: 2 } }]), /snapshot/);
+  assert.throws(() => restoreState([{ type: "custom", customType: "tasks-state", data: { ...state, version: 999 } }]), /snapshot/);
   const corrupt = structuredClone(state);
   corrupt.tasks.push({ ...corrupt.tasks[0] });
   assert.throws(() => validateState(corrupt), /duplicate/);

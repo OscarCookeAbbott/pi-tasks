@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import extension from "../src/index.ts";
-import { activeTask, emptyState, transition, type TaskState } from "../src/state.ts";
+import { activeTask, emptyState, transition, type TaskNote, type TaskState } from "../src/state.ts";
 
 type Entry = { type: string; customType?: string; data?: unknown };
 type Details = { response: string; state: TaskState; affectedIds: string[] };
@@ -17,6 +17,7 @@ function harness(settings: unknown = {}) {
   const widgets = new Map<string, any>();
   const renderers = new Map<string, Function>();
   let tool: ToolDefinition<TSchema, Details>;
+  let noteTool: ToolDefinition<TSchema, { response: string; note: TaskNote }>;
   let command: any;
   let failWrites = false;
   const ctx = {
@@ -34,7 +35,11 @@ function harness(settings: unknown = {}) {
   } as unknown as ExtensionContext;
   extension({
     on: (name: string, handler: any) => handlers.set(name, handler),
-    registerTool: (definition: ToolDefinition<TSchema, Details>) => { tool = definition; },
+    registerTool: (definition: ToolDefinition<TSchema, any>) => {
+      if (definition.name === "tasks") tool = definition;
+      else if (definition.name === "task_notes") noteTool = definition;
+      else assert.fail(`Unexpected tool ${definition.name}`);
+    },
     registerCommand: (_name: string, definition: any) => { command = definition; },
     registerMessageRenderer: (name: string, renderer: Function) => renderers.set(name, renderer),
     getSettings: () => settings,
@@ -47,12 +52,19 @@ function harness(settings: unknown = {}) {
   return {
     entries, notifications, widgets, renderers, ctx, emit,
     get tool() { return tool!; },
+    get noteTool() { return noteTool!; },
+    async note(params: JsonObject) {
+      const validated = validateToolArguments(noteTool!, { type: "toolCall", id: "note-call", name: "task_notes", arguments: params });
+      const result = await noteTool!.execute("note-call", validated, undefined, undefined, ctx as any);
+      emit("tool_result", { toolName: "task_notes" });
+      return result;
+    },
     get command() { return command; },
     widgetLines(width = 80): string[] {
       const factory = widgets.get("tasks");
       return factory ? factory({}, { fg: (_color: string, text: string) => text }).render(width) : [];
     },
-    failWrites() { failWrites = true; },
+    failWrites(value = true) { failWrites = value; },
     async call(params: JsonObject) {
       const validated = validateToolArguments(tool!, { type: "toolCall", id: "call", name: "tasks", arguments: params });
       const result = await tool!.execute("call", validated, undefined, undefined, ctx as any);
@@ -61,6 +73,138 @@ function harness(settings: unknown = {}) {
     },
   };
 }
+
+test("task notes record, read and retract immutable context, including after task completion", async () => {
+  const h = harness();
+  assert.equal(h.noteTool.executionMode, "sequential");
+  assert.match(h.noteTool.description, /decisions, discoveries, constraints and risks/);
+  assert.match(h.noteTool.promptGuidelines!.join(" "), /task completion for outcomes/);
+  await assert.rejects(h.note({ action: "record", text: "Important" }), /active task/);
+  const task = await h.call({ action: "add", title: "Investigate" });
+  const owner = task.details!.affectedIds[0];
+  const recorded = await h.note({ action: "record", text: "Decision: preserve the existing API." });
+  const note = recorded.details!.note;
+  assert.equal(note.taskId, owner);
+  assert.match(recorded.details!.response, new RegExp(`Note \\[${note.id}\\] recorded for task \\[${owner}\\]`));
+  const invalid: JsonObject[] = [
+    { action: "record" },
+    { action: "read" },
+    { action: "retract", id: note.id },
+    { action: "record", text: "Rewrite", id: note.id },
+    { action: "record", text: "Reparent", parent: owner },
+    { action: "edit", id: note.id, text: "Changed" },
+    { action: "read", id: note.id, text: "Changed" },
+    { action: "retract", id: note.id, text: "Changed", reason: "No" },
+    { action: "retract", id: note.id, reason: " " },
+  ];
+  for (const params of invalid) await assert.rejects(h.note(params));
+  await h.call({ action: "complete", id: owner, outcome: "Investigation complete." });
+  const count = h.entries.length;
+  const read = await h.note({ action: "read", id: note.id });
+  assert.equal(h.entries.length, count);
+  assert.match(read.details!.response, /Decision: preserve the existing API/);
+  assert.match(read.details!.response, /Investigate/);
+  const retracted = await h.note({ action: "retract", id: note.id, reason: "Superseded by later findings." });
+  assert.deepEqual(recorded.details!.note, note);
+  assert.equal(retracted.details!.note.text, note.text);
+  assert.equal(retracted.details!.note.taskId, owner);
+  assert.equal(retracted.details!.note.reason, "Superseded by later findings.");
+  assert.match((await h.note({ action: "read", id: note.id })).details!.response, /retracted[\s\S]*Reason: Superseded/);
+  await assert.rejects(h.note({ action: "retract", id: note.id, reason: "Again" }), /already retracted/);
+  await h.command.handler(`show ${owner}`, h.ctx);
+  assert.match(h.notifications.at(-1)!, new RegExp(`Note \\[${note.id}\\] retracted`));
+  const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
+  const header = (h.noteTool.renderCall! as Function)({ action: "read", id: note.id }, theme, {}).render(200).join("\n").trimEnd();
+  assert.equal(header, `<toolTitle><bold>task_notes</bold></toolTitle><muted> read</muted><accent> [${note.id}]</accent>`);
+  const retractionHeader = (h.noteTool.renderCall! as Function)({ action: "retract", id: note.id, reason: "Superseded" }, theme, {}).render(200).join("\n").trimEnd();
+  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><muted> retract</muted><accent> [${note.id}]</accent><muted> — Superseded</muted>`);
+});
+
+test("note visibility is independent, defaults on, persists and never exposes notes of filtered tasks", async () => {
+  const h = harness();
+  h.emit("session_start");
+  const task = await h.call({ action: "add", title: "Work" });
+  const owner = task.details!.affectedIds[0];
+  const old = await h.note({ action: "record", text: "Old decision" });
+  const discovery = await h.note({ action: "record", text: "New\ndiscovery\t\x1b[2A" });
+  await h.note({ action: "retract", id: old.details!.note.id, reason: "Replaced" });
+  assert.ok(!h.widgetLines().some((line) => /Old decision/.test(line)));
+  assert.ok(h.widgetLines().some((line) => /New discovery/.test(line)));
+  assert.equal(h.widgetLines()[0], "Tasks · 0/1 complete");
+  for (const width of [1, 12, 80]) assert.ok(h.widgetLines(width).every((line) => !/[\r\n\t]/.test(line) && visibleWidth(line) <= width));
+  await h.command.handler("notes all", h.ctx);
+  assert.ok(h.widgetLines().some((line) => /⊘ note.*Old decision/.test(line)));
+  h.emit("session_tree");
+  assert.equal((await h.call({ action: "list" })).details!.state.noteVisibility, "all");
+  await h.command.handler("notes none", h.ctx);
+  assert.deepEqual(h.widgetLines(), ["Tasks · 0/1 complete", `▶ [${owner}] Work`]);
+  const model = await h.call({ action: "list" });
+  assert.match(model.details!.response, /note retracted.*Old decision/);
+  assert.match(model.details!.response, /New\ndiscovery/);
+  const read = await h.note({ action: "read", id: discovery.details!.note.id });
+  assert.ok(read.details!.response.includes("\x1b[2A"));
+  for (const [tool, result] of [[h.tool, model], [h.noteTool, read]] as const) {
+    const lines: string[] = (tool.renderResult! as Function)(result, { expanded: false }, { fg: (_color: string, text: string) => text }, {}).render(80);
+    assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line) && visibleWidth(line) <= 80));
+  }
+  await h.command.handler("notes all", h.ctx);
+  await h.call({ action: "complete", id: owner, outcome: "Done" });
+  await h.call({ action: "add", title: "Next" });
+  assert.ok(!h.widgetLines().some((line) => /note \[/.test(line)));
+  await h.command.handler("all", h.ctx);
+  assert.ok(h.widgetLines().some((line) => /Old decision/.test(line)));
+  await h.command.handler("hidden", h.ctx);
+  assert.deepEqual(h.widgetLines(), []);
+  assert.deepEqual(h.command.getArgumentCompletions("notes ").map((item: any) => item.value), ["notes all", "notes active", "notes none"]);
+});
+
+test("a clipped widget never starts with notes whose task row is outside the window", async () => {
+  const h = harness();
+  const parent = (await h.call({ action: "add", title: "Parent" })).details!.affectedIds[0];
+  const child = (await h.call({ action: "add", title: "Child", parent })).details!.affectedIds[0];
+  for (let index = 0; index < 9; index++) await h.note({ action: "record", text: `Discovery ${index}` });
+  await h.call({ action: "complete", id: parent, outcome: "Own work done" });
+  assert.equal(h.widgetLines()[1], `  ▶ [${child}] Child`);
+  assert.ok(!h.widgetLines().some((line) => /note \[/.test(line)));
+});
+
+test("notes follow branch snapshots and failed persistence rolls back recording, retraction and visibility", async () => {
+  const h = harness({ tasks: { defaultNoteVisibility: "none" } });
+  h.emit("session_start");
+  await h.call({ action: "add", title: "Work" });
+  assert.equal((await h.call({ action: "list" })).details!.state.noteVisibility, "none");
+  const count = h.entries.length;
+  h.failWrites();
+  await assert.rejects(h.note({ action: "record", text: "Not durable" }), /Disk unavailable/);
+  assert.equal(h.entries.length, count);
+  assert.deepEqual((await h.call({ action: "list" })).details!.state.notes, []);
+  h.failWrites(false);
+  const recorded = await h.note({ action: "record", text: "Durable discovery" });
+  const snapshotCount = h.entries.length;
+  h.failWrites();
+  await assert.rejects(h.note({ action: "retract", id: recorded.details!.note.id, reason: "No" }), /Disk unavailable/);
+  await assert.rejects(h.command.handler("notes all", h.ctx), /Disk unavailable/);
+  assert.equal((await h.call({ action: "list" })).details!.state.noteVisibility, "none");
+  assert.equal((await h.note({ action: "read", id: recorded.details!.note.id })).details!.note.retractedAt, undefined);
+  h.failWrites(false);
+  await h.note({ action: "retract", id: recorded.details!.note.id, reason: "Later branch" });
+  h.entries.splice(snapshotCount);
+  h.emit("session_tree");
+  assert.equal((await h.note({ action: "read", id: recorded.details!.note.id })).details!.note.retractedAt, undefined);
+  const invalid = harness({ tasks: { defaultNoteVisibility: "bad" } });
+  invalid.emit("session_start");
+  assert.match(invalid.notifications[0], /defaultNoteVisibility/);
+  assert.equal((await invalid.call({ action: "list" })).details!.state.noteVisibility, "active");
+});
+
+test("historical v1 tool results remain expandable without rewriting their snapshots", async () => {
+  const h = harness();
+  const result = await h.call({ action: "add", title: "Historical task" });
+  const legacy = { version: 1, tasks: result.details!.state.tasks, visibility: result.details!.state.visibility };
+  const rendered = (h.tool.renderResult! as Function)({ ...result, details: { ...result.details, state: legacy } }, { expanded: true }, { fg: (_color: string, text: string) => text }, {}).render(200).join("\n");
+  assert.match(rendered, /Historical task/);
+  assert.equal("notes" in legacy, false);
+});
 
 test("task calls use bold names, highlighted arguments and standard result colours", async () => {
   const h = harness();
@@ -89,7 +233,7 @@ test("extension persists mutations, restores only the current branch, and keeps 
   const h = harness();
   h.emit("session_start");
   assert.equal(h.tool.executionMode, "sequential");
-  assert.equal(h.tool.promptSnippet, "Plan and track substantive work and outcomes with tasks.");
+  assert.equal(h.tool.promptSnippet, "Plan and track substantive work, outcomes and notes with tasks.");
   assert.ok(h.tool.description.startsWith(h.tool.promptSnippet!));
   assert.ok(h.tool.promptGuidelines?.[0].startsWith(h.tool.promptSnippet!));
   assert.equal(Reflect.get(h.tool.parameters, "type"), "object");
@@ -327,6 +471,7 @@ test("corrupt snapshots fail closed and persistence failures roll back in-memory
   corrupt.entries.push({ type: "custom", customType: "tasks-state", data: { version: 999 } });
   corrupt.emit("session_start");
   await assert.rejects(corrupt.call({ action: "add", title: "Overwrite" }), /unavailable/);
+  await assert.rejects(corrupt.note({ action: "record", text: "Overwrite" }), /unavailable/);
   assert.equal(corrupt.entries.length, 1);
   assert.match(corrupt.notifications[0], /restoration failed/);
   const h = harness();

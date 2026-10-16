@@ -25,5 +25,5 @@ test("Pi discovers the package manifest and loads only the tasks extension", asy
   const result = loader.getExtensions();
   assert.deepEqual(result.errors, []);
   assert.equal(result.extensions.length, 1);
-  assert.deepEqual([...result.extensions[0].tools.keys()], ["tasks"]);
+  assert.deepEqual([...result.extensions[0].tools.keys()], ["tasks", "task_notes"]);
 });

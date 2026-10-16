@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Add task_notes record/retract/read for important decisions, discoveries, constraints and risks; completion outcomes remain separate.
+- Permanently bind immutable timestamped notes to their active task, with an independent base-62 ID pool and irreversible, reasoned retraction.
+- Add saved /tasks notes all|active|none visibility, defaulting to unretracted notes and subordinate to task filtering. Inspection and model-facing lists retain full note history.
+- Migrate v1 snapshots to v2 without losing tasks and keep historical tool results expandable; preserve notes across branch navigation and reject corrupt snapshots or failed persistence without overwriting state.
+- Keep note rows single-line and with their visible owner in the clipped widget; display full note text safely on explicit read.
+
 ## 0.4.2
 
 - Highlight task IDs and titles in call headers; show add titles inline and shorten UI acknowledgements without removing titles from model feedback or placement details.
