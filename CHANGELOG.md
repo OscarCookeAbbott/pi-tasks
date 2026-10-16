@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Standardize displayed task IDs as [ab] and note IDs as <ab> through shared helpers across headers, acknowledgements, errors, lists, reminders and inspection.
+- Keep tool arguments, stored IDs and task_notes list JSON arrays bare; show parent task IDs consistently in task inspection.
+
 ## 0.6.0
 
 - Add optional backward-compatible task descriptions, editable independently while open and clearable with an empty string.

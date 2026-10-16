@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
+import { noteId, taskId } from "./ids.ts";
 import { activeTask, closingParents, describeNote, emptyState, findNote, reminder, restoreState, terminal, transition, transitionNote, treeLines, type Action, type NoteAction, type NoteVisibility, type Task, type TaskNote, type TaskState, type Visibility } from "./state.ts";
 
 const id = Type.String({ pattern: "^[0-9a-zA-Z]{2}$", description: "Immutable two-character task ID" });
@@ -164,7 +165,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         response = treeLines(state, params.visibility ?? "all", "text").join("\n") || "No tasks in this view.";
         const active = activeTask(state);
         const closing = active ? closingParents(state, active.id) : [];
-        checkpoint = params.visibility === "hidden" ? reminder(state) : closing.length ? `ancestorOutcomes: ${closing.map((id) => `[${id}]`).join(", ")}` : "";
+        checkpoint = params.visibility === "hidden" ? reminder(state) : closing.length ? `ancestorOutcomes: ${closing.map(taskId).join(", ")}` : "";
       } else {
         state = transition(state, params as Action);
         try {
@@ -176,19 +177,19 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         const changed = params.action === "add" ? state.tasks.find((task) => !previous.tasks.some((old) => old.id === task.id))! : state.tasks.find((task) => task.id === params.id)!;
         const verb = { add: "added", move: "moved", edit: "updated", complete: "completed", cancel: "cancelled" }[params.action];
         const status = changed.status === "waiting" ? `waiting (${changed.disposition === "completed" ? "completion" : "cancellation"} pending)` : verb;
-        response = `Task [${changed.id}] ${status}: ${changed.title}`;
+        response = `Task ${taskId(changed.id)} ${status}: ${changed.title}`;
         affectedIds.push(changed.id);
         const placement: string[] = [];
         if (params.action === "add" || params.action === "move") {
-          if (params.parent !== undefined) placement.push(`Parent: ${changed.parent === null ? "root" : `[${changed.parent}]`}`);
-          if (params.before !== undefined) placement.push(`Position: before sibling [${params.before}]`);
-          if (params.after !== undefined) placement.push(`Position: after sibling [${params.after}]`);
+          if (params.parent !== undefined) placement.push(`Parent: ${changed.parent === null ? "root" : taskId(changed.parent)}`);
+          if (params.before !== undefined) placement.push(`Position: before sibling ${taskId(params.before)}`);
+          if (params.after !== undefined) placement.push(`Position: after sibling ${taskId(params.after)}`);
         }
         if (placement.length) response += `\n${placement.join("\n")}`;
-        if (params.action === "add") displayResponse = [`Task [${changed.id}] added.`, ...placement].join("\n");
+        if (params.action === "add") displayResponse = [`Task ${taskId(changed.id)} added.`, ...placement].join("\n");
         const closed = state.tasks.filter((task) => task.id !== changed.id && previous.tasks.find((old) => old.id === task.id)?.status === "waiting" && (task.status === "completed" || task.status === "cancelled"));
         for (const task of closed) {
-          response += `\nTask [${task.id}] ${task.status}: ${task.title}`;
+          response += `\nTask ${taskId(task.id)} ${task.status}: ${task.title}`;
           affectedIds.push(task.id);
         }
         checkpoint = reminder(state);
@@ -203,7 +204,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     renderCall(args, theme) {
       return new Text(
         theme.fg("toolTitle", theme.bold("tasks")) + theme.fg(args.action ? "toolTitle" : "muted", ` ${args.action ?? "..."}`)
-        + (args.id ? theme.fg("accent", theme.bold(` [${args.id}]`)) : "")
+        + (args.id ? theme.fg("accent", theme.bold(` ${taskId(args.id)}`)) : "")
         + (args.title ? theme.fg("accent", theme.bold(` ${plainText(args.title)}`)) : ""),
         0, 0,
       );
@@ -217,15 +218,15 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (expanded && details.before) {
         const after = details.state.tasks.find((task) => task.id === details.before!.id);
         if (after) {
-          comparisons.push(...compareValues(`Task [${after.id}]`, details.before.title, after.title));
+          comparisons.push(...compareValues(`Task ${taskId(after.id)}`, details.before.title, after.title));
           if (details.before.description !== after.description) comparisons.push(...compareValues("Description", details.before.description || "(none)", after.description || "(none)"));
         }
       }
       if (expanded) {
         for (const task of details.state.tasks.filter((task) => details.affectedIds?.includes(task.id))) {
-          if (task.description?.trim() && (!details.before || details.before.description === task.description)) lines.push(`[${task.id}] Description: ${task.description}`);
-          if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`[${task.id}] Own work: ${task.ownOutcome}`);
-          if (task.outcome) lines.push(`[${task.id}] Outcome: ${task.outcome}`);
+          if (task.description?.trim() && (!details.before || details.before.description === task.description)) lines.push(`${taskId(task.id)} Description: ${task.description}`);
+          if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`${taskId(task.id)} Own work: ${task.ownOutcome}`);
+          if (task.outcome) lines.push(`${taskId(task.id)} Outcome: ${task.outcome}`);
         }
         lines.push(...treeLines(details.state, "all"));
       }
@@ -254,7 +255,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (Object.keys(params).some((key) => !fields[params.action].includes(key))) throw new Error(`Unexpected fields for note ${params.action}.`);
       if (params.action === "list") {
         if (!params.taskId) throw new Error("Task ID is required for listing notes.");
-        if (!state.tasks.some((task) => task.id === params.taskId)) throw new Error(`Unknown task ${params.taskId}.`);
+        if (!state.tasks.some((task) => task.id === params.taskId)) throw new Error(`Unknown task ${taskId(params.taskId)}.`);
         const ids = state.notes.filter((note) => note.taskId === params.taskId).map((note) => note.id);
         const response = JSON.stringify(ids);
         cadence.reset();
@@ -270,14 +271,17 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         note = params.action === "record" ? state.notes.at(-1)! : findNote(state, params.id!);
         updateWidget(ctx);
       }
-      const response = params.action === "read" ? describeNote(state, note) : `Note [${note.id}] ${params.action === "record" ? "recorded" : "retracted"} for task [${note.taskId}].`;
+      const response = params.action === "read" ? describeNote(state, note) : `Note ${noteId(note.id)} ${params.action === "record" ? "recorded" : "retracted"} for task ${taskId(note.taskId)}.`;
       cadence.reset();
       return { content: [{ type: "text", text: response }], details: { response, note: structuredClone(note) } };
     },
     renderCall(args, theme) {
+      let reference = "";
+      if (args.id) reference = noteId(args.id);
+      else if (args.taskId) reference = taskId(args.taskId);
       return new Text(
         theme.fg("toolTitle", theme.bold("task_notes")) + theme.fg(args.action ? "toolTitle" : "muted", ` ${args.action ?? "..."}`)
-        + (args.id || args.taskId ? theme.fg("accent", theme.bold(` [${args.id ?? args.taskId}]`)) : "")
+        + (reference ? theme.fg("accent", theme.bold(` ${reference}`)) : "")
         + (args.text ? theme.fg("accent", theme.bold(` ${plainText(args.text)}`)) : "")
         + (args.reason ? theme.fg("accent", theme.bold(` — ${plainText(args.reason)}`)) : ""),
         0, 0,
@@ -325,7 +329,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           return;
         }
         const notes = state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note)));
-        ctx.ui.notify(`[${task.id}] ${task.title}\nStatus: ${task.status}\nParent: ${task.parent ?? "root"}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`, "info");
+        ctx.ui.notify(`${taskId(task.id)} ${task.title}\nStatus: ${task.status}\nParent: ${task.parent === null ? "root" : taskId(task.parent)}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`, "info");
         return;
       }
       if (value) {

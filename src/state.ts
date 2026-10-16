@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
+import { noteId, taskId } from "./ids.ts";
 
 const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const ID_COUNT = ID_ALPHABET.length * ID_ALPHABET.length;
@@ -51,7 +52,7 @@ function requiredText(text: string, label: string): string {
 }
 function findTask(state: TaskState, id: string): Task {
   const task = state.tasks.find((task) => task.id === id);
-  if (!task) throw new Error(`Unknown task ${id}.`);
+  if (!task) throw new Error(`Unknown task ${taskId(id)}.`);
   return task;
 }
 function children(state: TaskState, id: string): Task[] {
@@ -84,7 +85,7 @@ export const allocateNoteId = (state: TaskState, seed?: string): string => alloc
 
 export function findNote(state: TaskState, id: string): TaskNote {
   const note = state.notes.find((note) => note.id === id);
-  if (!note) throw new Error(`Unknown note ${id}.`);
+  if (!note) throw new Error(`Unknown note ${noteId(id)}.`);
   return note;
 }
 
@@ -97,7 +98,7 @@ export function transitionNote(state: TaskState, action: NoteAction, seed?: stri
     next.notes.push({ id: allocateNoteId(next, seed), taskId: owner.id, text: action.text, createdAt: now });
   } else if (action.action === "retract") {
     const note = findNote(next, action.id);
-    if (note.retractedAt !== undefined) throw new Error(`Note [${note.id}] is already retracted.`);
+    if (note.retractedAt !== undefined) throw new Error(`Note ${noteId(note.id)} is already retracted.`);
     note.reason = requiredText(action.reason, "Retraction reason");
     note.retractedAt = now;
   } else throw new Error("Unknown note action.");
@@ -107,7 +108,7 @@ export function transitionNote(state: TaskState, action: NoteAction, seed?: stri
 
 export function describeNote(state: TaskState, note: TaskNote): string {
   const owner = findTask(state, note.taskId);
-  return `Note [${note.id}] ${note.retractedAt === undefined ? "active" : "retracted"}\nTask [${owner.id}]: ${owner.title}\nCreated: ${new Date(note.createdAt).toISOString()}\nText:\n${note.text}${note.retractedAt === undefined ? "" : `\nRetracted: ${new Date(note.retractedAt).toISOString()}\nReason: ${note.reason}`}`;
+  return `Note ${noteId(note.id)} ${note.retractedAt === undefined ? "active" : "retracted"}\nTask ${taskId(owner.id)}: ${owner.title}\nCreated: ${new Date(note.createdAt).toISOString()}\nText:\n${note.text}${note.retractedAt === undefined ? "" : `\nRetracted: ${new Date(note.retractedAt).toISOString()}\nReason: ${note.reason}`}`;
 }
 
 function insertionIndex(state: TaskState, parent: string | null, before?: string, after?: string): number {
@@ -143,7 +144,7 @@ function closeWaiting(state: TaskState, summaries: Record<string, string> = {}):
     const task = findTask(state, id);
     return task.status === "completed" && !task.outcome;
   });
-  if (missing.length) throw new Error(`Include ancestorOutcomes for closing parents: ${missing.map((id) => `[${id}] ${findTask(state, id).title}`).join(", ")}. No tasks changed.`);
+  if (missing.length) throw new Error(`Include ancestorOutcomes for closing parents: ${missing.map((id) => `${taskId(id)} ${findTask(state, id).title}`).join(", ")}. No tasks changed.`);
   return closed;
 }
 
@@ -233,11 +234,11 @@ export function reminder(state: TaskState): string {
   let parent = active.parent;
   while (parent !== null) {
     const task = findTask(state, parent);
-    path.unshift(`[${task.id}] ${task.title}`);
+    path.unshift(`${taskId(task.id)} ${task.title}`);
     parent = task.parent;
   }
   const closing = closingParents(state, active.id);
-  return `Active task [${active.id}]: ${active.title}${path.length ? ` | Parents: ${path.join(" / ")}` : ""}${closing.length ? ` | ancestorOutcomes: ${closing.map((id) => `[${id}]`).join(", ")}` : ""}`;
+  return `Active task ${taskId(active.id)}: ${active.title}${path.length ? ` | Parents: ${path.join(" / ")}` : ""}${closing.length ? ` | ancestorOutcomes: ${closing.map(taskId).join(", ")}` : ""}`;
 }
 
 export function validateState(state: TaskState): void {
@@ -323,7 +324,7 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
     if (!included.has(task.id)) return [];
     const title = format === "display" ? singleLine(task.title) : task.title;
     return [
-      `${"  ".repeat(depth)}${format === "text" ? task.status : symbols[task.status]} [${task.id}] ${title}`,
+      `${"  ".repeat(depth)}${format === "text" ? task.status : symbols[task.status]} ${taskId(task.id)} ${title}`,
       ...(format !== "display" && task.description?.trim() ? [`${"  ".repeat(depth + 1)}Description: ${task.description}`] : []),
       ...(format === "full" ? [
         ...(task.status === "waiting" ? [`${"  ".repeat(depth + 1)}Pending: ${task.disposition}`] : []),
@@ -332,8 +333,8 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
       ] : []),
       ...(notesByTask.get(task.id) ?? []).map((note) => {
         const retracted = note.retractedAt !== undefined;
-        if (format === "full") return `${"  ".repeat(depth + 1)}${retracted ? "⊘" : "◆"} <${note.id}> · ${new Date(note.createdAt).toISOString()}\n${"  ".repeat(depth + 2)}${note.text}${retracted ? `\n${"  ".repeat(depth + 2)}Retracted: ${new Date(note.retractedAt!).toISOString()}\n${"  ".repeat(depth + 2)}Reason: ${note.reason}` : ""}`;
-        const prefix = format === "text" ? `note ${retracted ? "retracted" : "active"} [${note.id}]` : `${retracted ? "⊘" : "◆"} <${note.id}>`;
+        if (format === "full") return `${"  ".repeat(depth + 1)}${retracted ? "⊘" : "◆"} ${noteId(note.id)} · ${new Date(note.createdAt).toISOString()}\n${"  ".repeat(depth + 2)}${note.text}${retracted ? `\n${"  ".repeat(depth + 2)}Retracted: ${new Date(note.retractedAt!).toISOString()}\n${"  ".repeat(depth + 2)}Reason: ${note.reason}` : ""}`;
+        const prefix = format === "text" ? `note ${retracted ? "retracted" : "active"} ${noteId(note.id)}` : `${retracted ? "⊘" : "◆"} ${noteId(note.id)}`;
         const text = note.text + (retracted ? ` | Reason: ${note.reason}` : "");
         return `${"  ".repeat(depth + 1)}${prefix} ${format === "display" ? singleLine(text) : text}`;
       }),

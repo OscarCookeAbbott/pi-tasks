@@ -123,7 +123,7 @@ test("note listing returns only IDs in creation order, including retracted notes
   assert.equal(h.entries.length, count);
   await assert.rejects(h.note({ action: "list" }), /Task ID/);
   const missing = ["00", "01", "02"].find((id) => id !== owner && id !== other)!;
-  await assert.rejects(h.note({ action: "list", taskId: missing }), /Unknown task/);
+  await assert.rejects(h.note({ action: "list", taskId: missing }), { message: `Unknown task [${missing}].` });
   await assert.rejects(h.note({ action: "list", taskId: owner, text: "Unexpected" }), /Unexpected fields/);
   await assert.rejects(h.note({ action: "record", taskId: other, text: "No parent override" }), /Unexpected fields/);
 });
@@ -145,7 +145,7 @@ test("bare tasks inspection includes descriptions, outcomes and all full notes d
   await h.command.handler("", h.ctx);
   assert.ok(output.every((line) => visibleWidth(line) <= 80 && !/[\r\n\t]/.test(line)));
   const text = output.join("\n");
-  for (const expected of ["Closed owner", "Scope details", "Final outcome", note.details!.note.id, "HISTORYEND", "Second note line", "Superseded history", "Retracted:"]) assert.ok(text.includes(expected), expected);
+  for (const expected of ["Closed owner", "Scope details", "Final outcome", `⊘ <${note.details!.note.id}>`, "HISTORYEND", "Second note line", "Superseded history", "Retracted:"]) assert.ok(text.includes(expected), expected);
 });
 
 test("task notes record, read and retract immutable context, including after task completion", async () => {
@@ -159,7 +159,9 @@ test("task notes record, read and retract immutable context, including after tas
   const recorded = await h.note({ action: "record", text: "Decision: preserve the existing API." });
   const note = recorded.details!.note;
   assert.equal(note.taskId, owner);
-  assert.match(recorded.details!.response, new RegExp(`Note \\[${note.id}\\] recorded for task \\[${owner}\\]`));
+  assert.equal(recorded.details!.response, `Note <${note.id}> recorded for task [${owner}].`);
+  const missing = ["00", "01"].find((id) => id !== note.id)!;
+  await assert.rejects(h.note({ action: "read", id: missing }), { message: `Unknown note <${missing}>.` });
   const invalid: JsonObject[] = [
     { action: "record" },
     { action: "read" },
@@ -177,21 +179,24 @@ test("task notes record, read and retract immutable context, including after tas
   const read = await h.note({ action: "read", id: note.id });
   assert.equal(h.entries.length, count);
   assert.match(read.details!.response, /Decision: preserve the existing API/);
-  assert.match(read.details!.response, /Investigate/);
+  assert.ok(read.details!.response.startsWith(`Note <${note.id}> active\nTask [${owner}]: Investigate\n`));
   const retracted = await h.note({ action: "retract", id: note.id, reason: "Superseded by later findings." });
   assert.deepEqual(recorded.details!.note, note);
   assert.equal(retracted.details!.note.text, note.text);
   assert.equal(retracted.details!.note.taskId, owner);
   assert.equal(retracted.details!.note.reason, "Superseded by later findings.");
+  assert.equal(retracted.details!.response, `Note <${note.id}> retracted for task [${owner}].`);
   assert.match((await h.note({ action: "read", id: note.id })).details!.response, /retracted[\s\S]*Reason: Superseded/);
-  await assert.rejects(h.note({ action: "retract", id: note.id, reason: "Again" }), /already retracted/);
+  await assert.rejects(h.note({ action: "retract", id: note.id, reason: "Again" }), { message: `Note <${note.id}> is already retracted.` });
   await h.command.handler(`show ${owner}`, h.ctx);
-  assert.match(h.notifications.at(-1)!, new RegExp(`Note \\[${note.id}\\] retracted`));
+  assert.ok(h.notifications.at(-1)!.includes(`Note <${note.id}> retracted`));
   const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
   const header = (h.noteTool.renderCall! as Function)({ action: "read", id: note.id }, theme, {}).render(200).join("\n").trimEnd();
-  assert.equal(header, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> read</toolTitle><accent><bold> [${note.id}]</bold></accent>`);
+  assert.equal(header, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> read</toolTitle><accent><bold> <${note.id}></bold></accent>`);
+  const listHeader = (h.noteTool.renderCall! as Function)({ action: "list", taskId: owner }, theme, {}).render(200).join("\n").trimEnd();
+  assert.equal(listHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> list</toolTitle><accent><bold> [${owner}]</bold></accent>`);
   const retractionHeader = (h.noteTool.renderCall! as Function)({ action: "retract", id: note.id, reason: "Superseded" }, theme, {}).render(200).join("\n").trimEnd();
-  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> retract</toolTitle><accent><bold> [${note.id}]</bold></accent><accent><bold> — Superseded</bold></accent>`);
+  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> retract</toolTitle><accent><bold> <${note.id}></bold></accent><accent><bold> — Superseded</bold></accent>`);
 });
 
 test("note visibility is independent, defaults on, persists and never exposes notes of filtered tasks", async () => {
@@ -213,7 +218,7 @@ test("note visibility is independent, defaults on, persists and never exposes no
   await h.command.handler("notes none", h.ctx);
   assert.deepEqual(h.widgetLines(), ["Tasks · 0/1 complete", `▶ [${owner}] Work`]);
   const model = await h.call({ action: "list" });
-  assert.match(model.details!.response, /note retracted.*Old decision/);
+  assert.ok(model.details!.response.includes(`note retracted <${old.details!.note.id}> Old decision`));
   assert.match(model.details!.response, /New\ndiscovery/);
   const read = await h.note({ action: "read", id: discovery.details!.note.id });
   assert.ok(read.details!.response.includes("\x1b[2A"));
@@ -412,6 +417,10 @@ test("mutation feedback keeps titles and qualifies only explicit positioning", a
   assert.equal(child.details!.response, `Task [${c}] added: Child\nParent: [${a}]`);
   const moved = await h.call({ action: "move", id: b, parent: a, before: c });
   assert.equal(moved.details!.response, `Task [${b}] moved: Second\nParent: [${a}]\nPosition: before sibling [${c}]`);
+  await h.command.handler(`show ${b}`, h.ctx);
+  assert.ok(h.notifications.at(-1)!.startsWith(`[${b}] Second\nStatus: future\nParent: [${a}]`));
+  const missing = ["00", "01", "02", "03"].find((id) => ![a, b, c].includes(id))!;
+  await assert.rejects(h.call({ action: "edit", id: missing, title: "Unknown" }), { message: `Unknown task [${missing}].` });
 });
 
 test("default visibility applies only without a saved snapshot", async () => {

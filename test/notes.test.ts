@@ -21,7 +21,7 @@ test("notes keep their original text, owner and creation time through task progr
   assert.deepEqual(before.notes[0], recorded);
   assert.deepEqual(state.notes[0], { ...recorded, retractedAt: 2000, reason: "Superseded by a new discovery." });
   assert.deepEqual(state.tasks, before.tasks);
-  assert.match(describeNote(state, state.notes[0]), /retracted\nTask \[.*\]: Investigate/);
+  assert.ok(describeNote(state, state.notes[0]).startsWith(`Note <${recorded.id}> retracted\nTask [${owner}]: Investigate\n`));
   assert.match(describeNote(state, state.notes[0]), /Created: 1970-01-01T00:00:01.000Z/);
   assert.match(describeNote(state, state.notes[0]), /Decision: use the existing service\./);
   assert.equal(state.notes[0].taskId, owner);
@@ -84,7 +84,7 @@ test("note filters are subordinate to visible tasks, preserve ancestry and never
   state.noteVisibility = "none";
   assert.ok(!treeLines(state, "all").some((line) => /^[\s]*[◆⊘] </.test(line)));
   const model = treeLines(state, "all", "text").join("\n");
-  assert.match(model, /note retracted.*Old decision.*Replaced/);
+  assert.ok(model.includes(`note retracted <${state.notes[1].id}> Old decision | Reason: Replaced`));
   assert.equal(state.tasks.length, 3);
   assert.equal(activeTask(state)!.title, "Child");
 });
