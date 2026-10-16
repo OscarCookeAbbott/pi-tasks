@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Lead tool descriptions and prompt summaries with substantive work and outcome tracking, without requiring a pre-planned multi-step sequence.
+- Use bold tool names, muted arguments, standard output/error colours and muted expanded metadata; avoid undefined arguments during streaming.
+- Restore themed notification backgrounds for task reminders and respect output padding.
+
 ## 0.4.0
 
 - Keep task titles in compact acknowledgements, qualify explicit sibling/parent placement, and avoid repeating list checkpoints or supplied outcomes.

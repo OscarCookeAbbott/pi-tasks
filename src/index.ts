@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
 import { activeTask, closingParents, emptyState, reminder, restoreState, terminal, transition, treeLines, type Action, type TaskState, type Visibility } from "./state.ts";
@@ -33,9 +33,11 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   let skipStartingUser = false;
   let cadence = new ReminderCadence();
 
-  pi.registerMessageRenderer("tasks-reminder", (message, _options, theme) => {
+  pi.registerMessageRenderer("tasks-reminder", (message, { outputPad }, theme) => {
     const text = typeof message.content === "string" ? message.content : message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
-    return new Text(theme.fg("toolOutput", text), 0, 0);
+    const box = new Box(outputPad ?? 1, 1, (line) => theme.bg("customMessageBg", line));
+    box.addChild(new Text(theme.fg("customMessageText", text), 0, 0));
+    return box;
   });
 
   function persist(): void {
@@ -127,9 +129,9 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "tasks",
     label: "Tasks",
-    description: "Manage a forward-only task tree. Add, list, edit, move future subtrees (position and/or parent), complete the active task with an outcome, or cancel active/future tasks. Completing/cancelling a parent with unfinished children makes it waiting and advances into its children. Final child closure automatically closes waiting ancestors; include ancestorOutcomes for each completing ancestor. Cancelled parents do not cancel their children. IDs never change. Anchors must be siblings; additions default to root/end, moves retain their parent unless specified. Only the future portion can be reordered.",
-    promptSnippet: "Track ordered tasks and parent/child progress with immutable short IDs.",
-    promptGuidelines: ["Use tasks for multi-step work. Work on only the active task; complete it with a brief outcome or cancel it before advancing. Supply ancestorOutcomes when the final child closes a waiting parent."],
+    description: "Plan and track substantive work and outcomes with tasks. Manage a forward-only task tree. Add, list, edit, move future subtrees (position and/or parent), complete the active task with an outcome, or cancel active/future tasks. Completing/cancelling a parent with unfinished children makes it waiting and advances into its children. Final child closure automatically closes waiting ancestors; include ancestorOutcomes for each completing ancestor. Cancelled parents do not cancel their children. IDs never change. Anchors must be siblings; additions default to root/end, moves retain their parent unless specified. Only the future portion can be reordered.",
+    promptSnippet: "Plan and track substantive work and outcomes with tasks.",
+    promptGuidelines: ["Plan and track substantive work and outcomes with tasks. Work on only the active task; complete it with a brief outcome or cancel it before advancing. Supply ancestorOutcomes when the final child closes a waiting parent."],
     parameters,
     executionMode: "sequential",
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -177,12 +179,13 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       };
     },
     renderCall(args, theme) {
-      return new Text(theme.fg("toolTitle", `tasks ${args.action}`) + (args.id ? ` [${args.id}]` : ""), 0, 0);
+      return new Text(theme.fg("toolTitle", theme.bold("tasks")) + theme.fg("muted", ` ${args.action ?? "..."}${args.id ? ` [${args.id}]` : ""}`), 0, 0);
     },
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, { expanded }, theme, context) {
+      const color = context?.isError ? "error" : "toolOutput";
       const details = result.details as { response: string; state: TaskState; affectedIds?: string[] } | undefined;
-      if (typeof details?.response !== "string") return new Text(result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n"), 0, 0);
-      const lines = [details.response];
+      if (typeof details?.response !== "string") return new Text(theme.fg(color, result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n")), 0, 0);
+      const lines: string[] = [];
       if (expanded) {
         for (const task of details.state.tasks.filter((task) => details.affectedIds?.includes(task.id))) {
           if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`[${task.id}] Own work: ${task.ownOutcome}`);
@@ -190,8 +193,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         }
         lines.push(...treeLines(details.state, "all"));
       }
-      const text = lines.join("\n");
-      return new Text(theme.fg("muted", text), 0, 0);
+      return new Text(theme.fg(color, details.response) + (lines.length ? `\n${theme.fg("muted", lines.join("\n"))}` : ""), 0, 0);
     },
   });
 

@@ -62,10 +62,28 @@ function harness(settings: unknown = {}) {
   };
 }
 
+test("task calls use bold names, muted arguments and standard result colours", async () => {
+  const h = harness();
+  const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
+  const renderCall = h.tool.renderCall! as Function;
+  assert.equal(renderCall({ action: "edit", id: "ab" }, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> edit [ab]</muted>");
+  assert.equal(renderCall({}, theme, {}).render(200).join("\n").trimEnd(), "<toolTitle><bold>tasks</bold></toolTitle><muted> ...</muted>");
+  const result = await h.call({ action: "add", title: "Work" });
+  const styles: string[] = [];
+  const resultTheme = { fg: (color: string, text: string) => { styles.push(color); return text; } };
+  const renderResult = h.tool.renderResult! as Function;
+  renderResult(result, { expanded: true }, resultTheme, { isError: false });
+  renderResult({ content: [{ type: "text", text: "Refused." }], details: {} }, { expanded: false }, resultTheme, { isError: true });
+  assert.deepEqual(styles, ["toolOutput", "muted", "error"]);
+});
+
 test("extension persists mutations, restores only the current branch, and keeps visibility user-only", async () => {
   const h = harness();
   h.emit("session_start");
   assert.equal(h.tool.executionMode, "sequential");
+  assert.equal(h.tool.promptSnippet, "Plan and track substantive work and outcomes with tasks.");
+  assert.ok(h.tool.description.startsWith(h.tool.promptSnippet!));
+  assert.ok(h.tool.promptGuidelines?.[0].startsWith(h.tool.promptSnippet!));
   assert.equal(Reflect.get(h.tool.parameters, "type"), "object");
   await assert.rejects(h.call({ action: "add" }), /Title/);
   await assert.rejects(h.call({ action: "complete", id: "invalid" }), /validation/i);
@@ -247,11 +265,20 @@ test("completion resets the ticker for the next task and reminders render as vis
   assert.equal(message.display, true);
   assert.match(message.content, /Active task .*Second/);
   assert.equal(periodic.continue, undefined);
-  const styles: string[] = [];
   const renderer = h.renderers.get("tasks-reminder")!;
-  const text = renderer(message, { expanded: false }, { fg: (color: string, text: string) => { styles.push(color); return text; } }).render(200).join("\n").trimEnd();
-  assert.equal(text, message.content);
-  assert.deepEqual(styles, ["toolOutput"]);
+  for (const outputPad of [0, 2]) {
+    const styles: string[] = [];
+    const backgrounds: string[] = [];
+    const theme = {
+      fg: (color: string, text: string) => { styles.push(color); return text; },
+      bg: (color: string, text: string) => { backgrounds.push(color); return text; },
+    };
+    const lines: string[] = renderer(message, { expanded: false, outputPad }, theme).render(200);
+    assert.equal(lines.map((line) => line.trim()).filter(Boolean).join("\n"), message.content);
+    assert.ok(lines.some((line) => line.startsWith(" ".repeat(outputPad) + message.content)));
+    assert.deepEqual(styles, ["customMessageText"]);
+    assert.ok(backgrounds.length > 0 && backgrounds.every((color) => color === "customMessageBg"));
+  }
 });
 
 test("configured intervals apply at session start and invalid settings warn and fall back to thirty", () => {
