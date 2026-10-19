@@ -9,7 +9,8 @@ import { activeTask, emptyState, transition, type TaskNote, type TaskState } fro
 
 type Entry = { type: string; customType?: string; data?: unknown };
 type Details = { response: string; state: TaskState; affectedIds: string[] };
-type OverviewData = { id: string; badge: string; sections: Array<{ title: string; items: Array<{ title: string; state: string; detail?: string }> }> };
+type OverviewItemData = { title: string; state: string; detail?: string; children?: OverviewItemData[] };
+type OverviewData = { id: string; badge: string; sections: Array<{ title: string; items: OverviewItemData[] }> };
 
 function harness(settings: unknown = {}) {
   const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
@@ -143,7 +144,7 @@ test("note listing returns only IDs in creation order, including retracted notes
   await assert.rejects(h.note({ action: "record", taskId: other, text: "No parent override" }), /Unexpected fields/);
 });
 
-test("expanded full-view task includes descriptions, outcomes and all full notes despite widget filters", async () => {
+test("full-view task and independent note nodes expose all details despite widget filters", async () => {
   const h = harness();
   const owner = (await h.call({ action: "add", title: "Closed owner", description: "Scope details" })).details!.affectedIds[0];
   const note = await h.note({ action: "record", text: "Historical detail ".repeat(12) + "HISTORYEND\nSecond note line\tEnd" });
@@ -154,10 +155,17 @@ test("expanded full-view task includes descriptions, outcomes and all full notes
   await h.command.handler("notes none", h.ctx);
   let output: string[] = [];
   Reflect.set(h.ctx.ui, "custom", async (factory: Function) => {
-    const view = factory({ terminal: { rows: 1000 }, requestRender() {} }, { fg: (_color: string, text: string) => text }, {}, () => {});
+    const view = factory({ terminal: { rows: 100 }, requestRender() {} }, { fg: (_color: string, text: string) => text }, {}, () => {});
     view.handleInput("\x1b[H");
     view.handleInput("\r");
+    const taskView = view.render(80).join("\n");
+    assert.match(taskView, /Scope details/);
+    assert.doesNotMatch(taskView, /HISTORYEND|Second note line|Superseded history/);
+    view.handleInput("\x1b[B");
+    view.handleInput("\r");
     output = view.render(80);
+    view.handleInput(" ");
+    assert.doesNotMatch(view.render(80).join("\n"), /HISTORYEND|Second note line|Superseded history/);
   });
   await h.command.handler("", h.ctx);
   assert.ok(output.every((line) => visibleWidth(line) <= 80 && !/[\r\n\t]/.test(line)));
@@ -647,7 +655,8 @@ test("optional overview publishes task progress/states and visible notes even wi
   let contribution = h.overview.get("tasks")!;
   assert.equal(contribution.badge, "0/2 tasks");
   assert.deepEqual(contribution.sections[0].items.map((item) => item.state), ["running", "pending"]);
-  assert.match(contribution.sections[1].items[0].title, /Keep this decision/);
+  assert.equal(contribution.sections.length, 1);
+  assert.match(contribution.sections[0].items[0].children![0].title, /Keep this decision/);
   await h.call({ action: "complete", id: first.details!.affectedIds[0], outcome: "Built" });
   await h.command.handler("hidden", h.ctx);
   await h.command.handler("notes none", h.ctx);
@@ -662,6 +671,26 @@ test("optional overview publishes task progress/states and visible notes even wi
   h.overview.clear();
   h.bus.emit("overview:collect", undefined);
   assert.equal(h.overview.size, 0);
+});
+
+test("overview nests subtasks and notes under their owners with complete task metadata", async () => {
+  const h = harness();
+  const parent = await h.call({ action: "add", title: "Parent", description: "Full description\n" + "x".repeat(200) });
+  const owner = parent.details!.affectedIds[0];
+  await h.note({ action: "record", text: "Parent note" });
+  await h.call({ action: "add", title: "Child", parent: owner });
+  await h.call({ action: "complete", id: owner, outcome: "Own work complete" });
+  await h.note({ action: "record", text: "Child note" });
+  const contribution = h.overview.get("tasks")!;
+  assert.equal(contribution.sections.length, 1);
+  assert.equal(contribution.sections[0].items.length, 1);
+  const root = contribution.sections[0].items[0];
+  assert.match(root.detail!, /Full description\nx{200}/);
+  assert.match(root.detail!, /Status:/);
+  assert.ok(root.children!.some((item) => item.title.includes("Parent note")));
+  const child = root.children!.find((item) => item.title.includes("Child") && item.title.includes("["))!;
+  assert.match(child.children![0].title, /Child note/);
+  assert.match(child.children![0].detail!, /Child note/);
 });
 
 test("mutations do not dump unrelated tasks or notes to the agent or expanded tool result", async () => {
@@ -679,6 +708,24 @@ test("mutations do not dump unrelated tasks or notes to the agent or expanded to
   assert.doesNotMatch(shown, /UNRELATED_FUTURE|UNRELATED_NOTE/);
   const listed = await h.call({ action: "list" });
   assert.match(listed.details!.response, /UNRELATED_FUTURE/);
+});
+
+test("task overflow is omitted when every filtered row fits, including active tasks near the end", async () => {
+  const h = harness();
+  const ids: string[] = [];
+  for (let i = 0; i < 6; i++) ids.push((await h.call({ action: "add", title: `Task ${i}` })).details!.affectedIds[0]);
+  await h.command.handler("all", h.ctx);
+  for (const id of ids.slice(0, 5)) await h.call({ action: "complete", id, outcome: "Done" });
+  assert.equal(h.widgetLines(120).length, 7);
+  assert.doesNotMatch(h.widgetLines(120)[0], /Showing/);
+  assert.ok(h.widgetLines(120).some((line) => line.includes("Task 0")));
+  await h.call({ action: "add", title: "Seventh" });
+  await h.call({ action: "add", title: "Eighth" });
+  assert.equal(h.widgetLines(120).length, 9);
+  assert.doesNotMatch(h.widgetLines(120)[0], /Showing/);
+  await h.command.handler("active", h.ctx);
+  assert.equal(h.widgetLines(120).length, 2);
+  assert.doesNotMatch(h.widgetLines(120)[0], /Showing/);
 });
 
 test("task overflow is shown beside progress in the header rather than a footer", async () => {

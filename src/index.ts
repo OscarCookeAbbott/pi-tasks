@@ -27,6 +27,7 @@ const parameters = Type.Object({
 }, { additionalProperties: false });
 
 type NotificationMode = "none" | "tasks" | "notes" | "all";
+type TaskOverviewItem = { title: string; state: string; detail: string; children: TaskOverviewItem[] };
 
 const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted", "◆": "toolOutput", "⊘": "dim" } as const;
 const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state).replace(/^Active task /, "Active task reminder "), display: true });
@@ -76,14 +77,22 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     try {
       if (restoreError || !state.tasks.length) { pi.events.emit("overview:remove", "tasks"); return; }
       const statuses = { active: "running", future: "pending", waiting: "waiting", completed: "complete", cancelled: "cancelled" };
-      const sections = [{ title: "Tasks", items: state.tasks.map((task) => ({
-        title: `${taskId(task.id)} ${task.title}`, state: statuses[task.status], detail: task.description || task.outcome || "",
-      })) }];
-      const notes = state.noteVisibility === "none" ? [] : state.notes.filter((note) => state.noteVisibility === "all" || note.retractedAt === undefined);
-      if (notes.length) sections.push({ title: "Notes", items: notes.map((note) => ({
-        title: `${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled", detail: `Task ${taskId(note.taskId)}${note.reason ? ` · ${note.reason}` : ""}`,
-      })) });
-      pi.events.emit("overview:publish", { id: "tasks", badge: `${progress(state)} tasks`, sections });
+      const items = new Map<string, TaskOverviewItem>(state.tasks.map((task) => [task.id, {
+        title: `${taskId(task.id)} ${task.title}`, state: statuses[task.status], detail: taskDetails(task, false), children: [],
+      }]));
+      const roots: TaskOverviewItem[] = [];
+      for (const task of state.tasks) {
+        const item = items.get(task.id)!;
+        if (task.parent === null) roots.push(item); else items.get(task.parent)!.children.push(item);
+      }
+      for (const note of state.notes) {
+        if (state.noteVisibility === "none" || (state.noteVisibility === "active" && note.retractedAt !== undefined)) continue;
+        items.get(note.taskId)!.children.push({
+          title: `${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled",
+          detail: describeNote(state, note), children: [],
+        });
+      }
+      pi.events.emit("overview:publish", { id: "tasks", badge: `${progress(state)} tasks`, sections: [{ title: "Tasks", items: roots }] });
     } catch { /* Overview is optional and must not affect tasks. */ }
   }
   function subscribeOverview(): void {
@@ -104,7 +113,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         const heading = `Tasks · ${progress(state)} complete`;
         if (!lines.length) return [truncateToWidth(theme.fg("muted", heading), width)];
         const activeIndex = lines.findIndex((line) => line.trimStart().startsWith("▶"));
-        let start = Math.max(0, activeIndex - 2);
+        let start = Math.min(Math.max(0, activeIndex - 2), Math.max(0, lines.length - 8));
         while (start > 0 && /^[◆⊘]/.test(lines[start]?.trimStart() ?? "")) start--;
         if (activeIndex - start >= 8) start = activeIndex;
         const shown = lines.slice(start, start + 8);
@@ -335,8 +344,8 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     },
   });
 
-  function taskDetails(task: Task): string {
-    const notes = state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note)));
+  function taskDetails(task: Task, includeNotes = true): string {
+    const notes = includeNotes ? state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note))) : [];
     return `${taskId(task.id)} ${task.title}\nStatus: ${task.status}\nParent: ${task.parent === null ? "root" : taskId(task.parent)}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`;
   }
 
@@ -389,10 +398,19 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         return;
       }
       const titles = treeLines(state, "all", "display", "none");
+      const items = state.tasks.flatMap((task, index) => {
+        const indent = titles[index].match(/^\s*/)?.[0] ?? "";
+        return [
+          { id: task.id, title: titles[index], detail: taskDetails(task, false) },
+          ...state.notes.filter((note) => note.taskId === task.id).map((note) => ({
+            id: `note:${note.id}`, title: `${indent}  ${note.retractedAt === undefined ? "◆" : "⊘"} ${noteId(note.id)} ${note.text}`,
+            detail: describeNote(state, note),
+          })),
+        ];
+      });
       await ctx.ui.custom<void>((tui, theme, _keys, done) => createBrowser({
-        title: `Tasks · ${progress(state)} complete`, theme, height: () => Math.max(1, tui.terminal.rows - 6),
-        items: state.tasks.map((task, index) => ({ title: titles[index], detail: taskDetails(task) })),
-        selected: state.tasks.findIndex((task) => task.status === "active"),
+        title: `Tasks · ${progress(state)} complete`, theme, height: () => Math.max(1, tui.terminal.rows - 6), items,
+        selected: items.findIndex((item) => item.id === activeTask(state)?.id),
         requestRender: () => tui.requestRender(), done,
       }));
     },

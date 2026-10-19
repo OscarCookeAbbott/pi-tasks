@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+
+- Publish complete task metadata and recursive task/note ownership to the overview menu, without item truncation.
+- Give notes independent selectable/expandable nodes in `/tasks`, rather than inlining their bodies in task details.
+- Show every filtered widget row when it fits; omit the overflow range unless rows are genuinely clipped.
+
 ## 0.9.0
 
 - Add selectable `/tasks` full views with Enter/Space detail expansion, paging, navigation buttons and fullscreen mouse support.
