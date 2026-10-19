@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+- Include original note text in recording and retraction desktop notifications, using the notifier's existing sanitisation and preview limits without changing agent-facing tool feedback.
+
 ## 0.7.0
 
 - Add opt-in desktop notifications for all task/note mutations and saved visibility changes, with `tasks.notifications` modes none (default), tasks, notes and all.

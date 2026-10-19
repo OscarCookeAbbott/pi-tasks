@@ -290,7 +290,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         updateWidget(ctx);
       }
       const response = params.action === "read" ? describeNote(state, note) : `Note ${noteId(note.id)} ${params.action === "record" ? "recorded" : "retracted"} for task ${taskId(note.taskId)}.`;
-      if (params.action !== "read") notifyChange(`task_notes.${params.action}`, response);
+      if (params.action !== "read") notifyChange(`task_notes.${params.action}`, `${response}\n${note.text}`);
       cadence.reset();
       return { content: [{ type: "text", text: response }], details: { response, note: structuredClone(note) } };
     },

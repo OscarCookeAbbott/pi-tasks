@@ -10,7 +10,7 @@ Requires Node 22.19 or newer and Pi. Tested against **Pi 1.2.0**; older Pi relea
 pi install git:github.com/OscarCookeAbbott/pi-tasks
 ```
 
-Start a new session or run `/reload`. For a pinned release, append `@v0.7.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
+Start a new session or run `/reload`. For a pinned release, append `@v0.8.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
 
 Use `pi install --local <source>` for a project-scoped installation; Pi loads it after project trust is granted. To uninstall:
 
@@ -149,7 +149,7 @@ Modes: `none` (default), `tasks` (all task mutations and saved task visibility c
 
 Events emitted through `notifications:notify` are `tasks.add`, `tasks.edit`, `tasks.move`, `tasks.complete`, `tasks.cancel`, `tasks.visibility`, `task_notes.record`, `task_notes.retract` and `task_notes.visibility`. `notifications.events` can additionally disable individual events, e.g. `{ "tasks.add": false }`.
 
-Messages contain IDs, titles and status, not descriptions, outcomes or note text. One task-operation notification includes automatically closed ancestors; parents with unfinished children are described as waiting. With no active notification consumer, events are ignored. Consumer failures do not change task results. Reads, lists, restoration and failed mutations never emit notifications.
+Task notifications contain IDs, titles and status, not descriptions or outcomes. Note recording/retraction notifications also include the original note text. `pi-notifications` sanitises and flattens messages and limits them to 1,000 characters; the desktop may show less. Note text may appear in lock-screen notifications. One task-operation notification includes automatically closed ancestors; parents with unfinished children are described as waiting. With no active notification consumer, events are ignored. Consumer failures do not change task results. Reads, lists, restoration and failed mutations never emit notifications.
 
 ## Development
 
