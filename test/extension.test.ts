@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateToolArguments, type JsonObject } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import extension from "../src/index.ts";
@@ -9,9 +9,12 @@ import { activeTask, emptyState, transition, type TaskNote, type TaskState } fro
 
 type Entry = { type: string; customType?: string; data?: unknown };
 type Details = { response: string; state: TaskState; affectedIds: string[] };
+type OverviewData = { id: string; badge: string; sections: Array<{ title: string; items: Array<{ title: string; state: string; detail?: string }> }> };
 
 function harness(settings: unknown = {}) {
   const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+  const bus = createEventBus();
+  const overview = new Map<string, OverviewData>();
   const entries: Entry[] = [];
   const notifications: string[] = [];
   const events: Array<{ name: string; payload: { event: string; title: string; message: string } }> = [];
@@ -45,9 +48,14 @@ function harness(settings: unknown = {}) {
     registerCommand: (_name: string, definition: any) => { command = definition; },
     registerMessageRenderer: (name: string, renderer: Function) => renderers.set(name, renderer),
     getSettings: () => settings,
-    events: { emit: (name: string, payload: { event: string; title: string; message: string }) => {
-      if (failNotifications) throw new Error("Notification listener unavailable");
-      events.push({ name, payload });
+    events: { on: bus.on, emit: (name: string, payload: unknown) => {
+      if (name === "notifications:notify") {
+        if (failNotifications) throw new Error("Notification listener unavailable");
+        events.push({ name, payload: payload as { event: string; title: string; message: string } });
+      }
+      if (name === "overview:publish") { const value = payload as OverviewData; overview.set(value.id, value); }
+      if (name === "overview:remove") overview.delete(payload as string);
+      bus.emit(name, payload);
     } },
     appendEntry: (customType: string, data: unknown) => {
       if (failWrites) throw new Error("Disk unavailable");
@@ -56,7 +64,7 @@ function harness(settings: unknown = {}) {
   } as unknown as ExtensionAPI);
   const emit = (name: string, event: any = {}) => handlers.get(name)?.(event, ctx);
   return {
-    entries, notifications, events, widgets, renderers, ctx, emit,
+    entries, notifications, events, widgets, renderers, ctx, emit, overview, bus,
     get tool() { return tool!; },
     get noteTool() { return noteTool!; },
     async note(params: JsonObject) {
@@ -135,7 +143,7 @@ test("note listing returns only IDs in creation order, including retracted notes
   await assert.rejects(h.note({ action: "record", taskId: other, text: "No parent override" }), /Unexpected fields/);
 });
 
-test("bare tasks inspection includes descriptions, outcomes and all full notes despite widget filters", async () => {
+test("expanded full-view task includes descriptions, outcomes and all full notes despite widget filters", async () => {
   const h = harness();
   const owner = (await h.call({ action: "add", title: "Closed owner", description: "Scope details" })).details!.affectedIds[0];
   const note = await h.note({ action: "record", text: "Historical detail ".repeat(12) + "HISTORYEND\nSecond note line\tEnd" });
@@ -147,12 +155,14 @@ test("bare tasks inspection includes descriptions, outcomes and all full notes d
   let output: string[] = [];
   Reflect.set(h.ctx.ui, "custom", async (factory: Function) => {
     const view = factory({ terminal: { rows: 1000 }, requestRender() {} }, { fg: (_color: string, text: string) => text }, {}, () => {});
+    view.handleInput("\x1b[H");
+    view.handleInput("\r");
     output = view.render(80);
   });
   await h.command.handler("", h.ctx);
   assert.ok(output.every((line) => visibleWidth(line) <= 80 && !/[\r\n\t]/.test(line)));
   const text = output.join("\n");
-  for (const expected of ["Closed owner", "Scope details", "Final outcome", `⊘ <${note.details!.note.id}>`, "HISTORYEND", "Second note line", "Superseded history", "Retracted:"]) assert.ok(text.includes(expected), expected);
+  for (const expected of ["Closed owner", "Scope details", "Final outcome", `Note <${note.details!.note.id}>`, "HISTORYEND", "Second note line", "Superseded history", "Retracted:"]) assert.ok(text.includes(expected), expected);
 });
 
 test("task notes record, read and retract immutable context, including after task completion", async () => {
@@ -609,7 +619,7 @@ test("optional notifications follow persisted mutations, never reads or failed c
   assert.ok(saved.details!.state.tasks.some((task) => task.title === "Saved without notifications"));
 });
 
-test("task notification modes default off and filter all task/note mutations including preferences", async () => {
+test("task notifications default to all and filter task/note mutations including preferences", async () => {
   const taskEvents = ["tasks.add", "tasks.visibility"];
   const noteEvents = ["task_notes.record", "task_notes.visibility"];
   for (const mode of [undefined, "none", "tasks", "notes", "all", "invalid", true, null]) {
@@ -619,11 +629,63 @@ test("task notification modes default off and filter all task/note mutations inc
     await h.note({ action: "record", text: "Note" });
     await h.command.handler("hidden", h.ctx);
     await h.command.handler("notes none", h.ctx);
-    const expected = ["tasks.add", "task_notes.record", "tasks.visibility", "task_notes.visibility"].filter((event) => mode === "all" || (mode === "tasks" && taskEvents.includes(event)) || (mode === "notes" && noteEvents.includes(event)));
+    const expected = ["tasks.add", "task_notes.record", "tasks.visibility", "task_notes.visibility"].filter((event) => mode === undefined || mode === "all" || (mode === "tasks" && taskEvents.includes(event)) || (mode === "notes" && noteEvents.includes(event)));
     assert.deepEqual(h.events.map(({ payload }) => payload.event), expected, `mode ${mode}`);
     if (mode === "invalid" || mode === true || mode === null) assert.match(h.notifications[0], /tasks.notifications/);
     await h.command.handler("hidden", h.ctx);
     await h.command.handler("notes none", h.ctx);
     assert.equal(h.events.length, expected.length, "Unchanged preferences must not notify");
   }
+});
+
+test("optional overview publishes task progress/states and visible notes even with a hidden widget", async () => {
+  const h = harness();
+  h.emit("session_start");
+  const first = await h.call({ action: "add", title: "Build", description: "Build the project" });
+  await h.call({ action: "add", title: "Review" });
+  await h.note({ action: "record", text: "Keep this decision" });
+  let contribution = h.overview.get("tasks")!;
+  assert.equal(contribution.badge, "0/2 tasks");
+  assert.deepEqual(contribution.sections[0].items.map((item) => item.state), ["running", "pending"]);
+  assert.match(contribution.sections[1].items[0].title, /Keep this decision/);
+  await h.call({ action: "complete", id: first.details!.affectedIds[0], outcome: "Built" });
+  await h.command.handler("hidden", h.ctx);
+  await h.command.handler("notes none", h.ctx);
+  assert.deepEqual(h.widgetLines(), []);
+  h.overview.clear();
+  h.bus.emit("overview:collect", undefined);
+  contribution = h.overview.get("tasks")!;
+  assert.equal(contribution.badge, "1/2 tasks");
+  assert.deepEqual(contribution.sections[0].items.map((item) => item.state), ["complete", "running"]);
+  assert.equal(contribution.sections.length, 1);
+  h.emit("session_shutdown");
+  h.overview.clear();
+  h.bus.emit("overview:collect", undefined);
+  assert.equal(h.overview.size, 0);
+});
+
+test("mutations do not dump unrelated tasks or notes to the agent or expanded tool result", async () => {
+  const h = harness();
+  await h.call({ action: "add", title: "Active owner" });
+  await h.note({ action: "record", text: "UNRELATED_NOTE" });
+  await h.call({ action: "add", title: "UNRELATED_FUTURE" });
+  const target = await h.call({ action: "add", title: "Before", description: "Old description" });
+  const result = await h.call({ action: "edit", id: target.details!.affectedIds[0], title: "After", description: "New description" });
+  const content = result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
+  assert.doesNotMatch(content, /UNRELATED_FUTURE|UNRELATED_NOTE/);
+  const shown = (h.tool.renderResult! as Function)(result, { expanded: true }, { fg: (_color: string, text: string) => text }, {}).render(200).join("\n");
+  assert.match(shown, /Before|After/);
+  assert.match(shown, /Old description|New description/);
+  assert.doesNotMatch(shown, /UNRELATED_FUTURE|UNRELATED_NOTE/);
+  const listed = await h.call({ action: "list" });
+  assert.match(listed.details!.response, /UNRELATED_FUTURE/);
+});
+
+test("task overflow is shown beside progress in the header rather than a footer", async () => {
+  const h = harness();
+  for (let i = 0; i < 12; i++) await h.call({ action: "add", title: `Task ${i}` });
+  const lines = h.widgetLines(100);
+  assert.equal(lines[0], "Tasks · 0/12 complete · Showing 1-8/12");
+  assert.equal(lines.length, 9);
+  assert.ok(lines.slice(1).every((line) => !line.includes("Showing")));
 });

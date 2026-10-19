@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { createBrowser } from "./browser.ts";
 import { Type } from "typebox";
 import { readReminderInterval, ReminderCadence } from "./reminders.ts";
 import { noteId, taskId } from "./ids.ts";
@@ -46,7 +47,8 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   let restoreError: string | undefined;
   let skipStartingUser = false;
   let cadence = new ReminderCadence();
-  let notificationMode: NotificationMode = "none";
+  let notificationMode: NotificationMode = "all";
+  let removeOverviewHook: (() => void) | undefined;
 
   pi.registerMessageRenderer("tasks-reminder", (message, { outputPad }, theme) => {
     const text = typeof message.content === "string" ? message.content : message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
@@ -70,7 +72,27 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     }
   }
 
+  function publishOverview(): void {
+    try {
+      if (restoreError || !state.tasks.length) { pi.events.emit("overview:remove", "tasks"); return; }
+      const statuses = { active: "running", future: "pending", waiting: "waiting", completed: "complete", cancelled: "cancelled" };
+      const sections = [{ title: "Tasks", items: state.tasks.map((task) => ({
+        title: `${taskId(task.id)} ${task.title}`, state: statuses[task.status], detail: task.description || task.outcome || "",
+      })) }];
+      const notes = state.noteVisibility === "none" ? [] : state.notes.filter((note) => state.noteVisibility === "all" || note.retractedAt === undefined);
+      if (notes.length) sections.push({ title: "Notes", items: notes.map((note) => ({
+        title: `${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled", detail: `Task ${taskId(note.taskId)}${note.reason ? ` · ${note.reason}` : ""}`,
+      })) });
+      pi.events.emit("overview:publish", { id: "tasks", badge: `${progress(state)} tasks`, sections });
+    } catch { /* Overview is optional and must not affect tasks. */ }
+  }
+  function subscribeOverview(): void {
+    if (!removeOverviewHook) removeOverviewHook = pi.events.on("overview:collect", publishOverview);
+  }
+  subscribeOverview();
+
   function updateWidget(ctx: ExtensionContext): void {
+    publishOverview();
     if (ctx.mode !== "tui") return;
     if (state.visibility === "hidden" || !state.tasks.length || restoreError) {
       ctx.ui.setWidget("tasks", undefined);
@@ -79,17 +101,16 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     ctx.ui.setWidget("tasks", (_tui, theme) => ({
       render(width: number): string[] {
         const lines = treeLines(state);
-        const heading = truncateToWidth(theme.fg("muted", `Tasks · ${progress(state)} complete`), width);
-        if (!lines.length) return [heading];
+        const heading = `Tasks · ${progress(state)} complete`;
+        if (!lines.length) return [truncateToWidth(theme.fg("muted", heading), width)];
         const activeIndex = lines.findIndex((line) => line.trimStart().startsWith("▶"));
         let start = Math.max(0, activeIndex - 2);
         while (start > 0 && /^[◆⊘]/.test(lines[start]?.trimStart() ?? "")) start--;
         if (activeIndex - start >= 8) start = activeIndex;
         const shown = lines.slice(start, start + 8);
         return [
-          heading,
+          truncateToWidth(theme.fg("muted", heading + (start > 0 || start + shown.length < lines.length ? ` · Showing ${start + 1}-${start + shown.length}/${lines.length}` : "")), width),
           ...shown.map((line) => truncateToWidth(theme.fg(markers[line.trimStart()[0] as keyof typeof markers] ?? "muted", line), width)),
-          ...(start > 0 || start + shown.length < lines.length ? [truncateToWidth(theme.fg("dim", `Showing ${start + 1}–${start + shown.length} of ${lines.length}`), width)] : []),
         ];
       },
       invalidate() {},
@@ -112,6 +133,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", (_event, ctx) => {
+    subscribeOverview();
     try {
       const settings = pi.getSettings();
       const interval = readReminderInterval(settings);
@@ -123,7 +145,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (configuredNotes !== undefined && !["all", "active", "none"].includes(configuredNotes as string)) throw new Error("tasks.defaultNoteVisibility must be all, active, or none.");
       const configuredNotifications = (settings as { tasks?: { notifications?: unknown } }).tasks?.notifications;
       if (configuredNotifications !== undefined && !["none", "tasks", "notes", "all"].includes(configuredNotifications as string)) throw new Error("tasks.notifications must be none, tasks, notes, or all.");
-      notificationMode = (configuredNotifications ?? "none") as NotificationMode;
+      notificationMode = (configuredNotifications ?? "all") as NotificationMode;
       defaultVisibility = (configuredVisibility ?? "incomplete") as Visibility;
       defaultNoteVisibility = (configuredNotes ?? "active") as NoteVisibility;
       cadence = new ReminderCadence(interval);
@@ -136,6 +158,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     }
     restore(ctx);
   });
+  pi.on("session_shutdown", () => { removeOverviewHook?.(); removeOverviewHook = undefined; });
   pi.on("session_tree", (_event, ctx) => restore(ctx));
   pi.on("session_compact", () => cadence.force());
 
@@ -242,11 +265,11 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       }
       if (expanded) {
         for (const task of details.state.tasks.filter((task) => details.affectedIds?.includes(task.id))) {
+          if (task.id !== details.before?.id) lines.push(`${taskId(task.id)} ${task.title}`);
           if (task.description?.trim() && (!details.before || details.before.description === task.description)) lines.push(`${taskId(task.id)} Description: ${task.description}`);
           if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`${taskId(task.id)} Own work: ${task.ownOutcome}`);
           if (task.outcome) lines.push(`${taskId(task.id)} Outcome: ${task.outcome}`);
         }
-        lines.push(...treeLines(details.state, "all"));
       }
       return new Text(theme.fg(color, plainText(comparisons.length ? comparisons.join("\n") : (details.displayResponse ?? details.response))) + (lines.length ? `\n${theme.fg("muted", plainText(lines.join("\n")))}` : ""), 0, 0);
     },
@@ -312,6 +335,11 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     },
   });
 
+  function taskDetails(task: Task): string {
+    const notes = state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note)));
+    return `${taskId(task.id)} ${task.title}\nStatus: ${task.status}\nParent: ${task.parent === null ? "root" : taskId(task.parent)}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`;
+  }
+
   pi.registerCommand("tasks", {
     description: "Browse tasks, set task visibility or notes all|active|none, or show <id> details",
     getArgumentCompletions(prefix) {
@@ -349,8 +377,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
           ctx.ui.notify("Unknown task ID.", "error");
           return;
         }
-        const notes = state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note)));
-        ctx.ui.notify(`${taskId(task.id)} ${task.title}\nStatus: ${task.status}\nParent: ${task.parent === null ? "root" : taskId(task.parent)}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`, "info");
+        ctx.ui.notify(taskDetails(task), "info");
         return;
       }
       if (value) {
@@ -361,28 +388,13 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(plainText(treeLines(state, "all", "full", "all").join("\n")) || "No tasks.", "info");
         return;
       }
-      await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-        let offset = 0;
-        return {
-          render(width) {
-            if (width < 1) return [];
-            const lines = treeLines(state, "all", "full", "all").flatMap((line) => plainText(line).replace(/\t/g, "   ").split("\n").flatMap((part) => wrapTextWithAnsi(part, width)));
-            const height = Math.max(1, tui.terminal.rows - 6);
-            offset = Math.min(offset, Math.max(0, lines.length - height));
-            return [theme.fg("accent", `Tasks · ${progress(state)} complete · ↑↓ / PgUp PgDn · Esc to close`), ...((lines.length ? lines : ["No tasks."]).slice(offset, offset + height).map((line) => truncateToWidth(line, width)))].map((line) => truncateToWidth(line, width));
-          },
-          handleInput(data) {
-            if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return done();
-            const page = Math.max(1, tui.terminal.rows - 6);
-            if (matchesKey(data, "up")) offset = Math.max(0, offset - 1);
-            if (matchesKey(data, "down")) offset++;
-            if (matchesKey(data, "pageUp")) offset = Math.max(0, offset - page);
-            if (matchesKey(data, "pageDown")) offset += page;
-            tui.requestRender();
-          },
-          invalidate() {},
-        };
-      });
+      const titles = treeLines(state, "all", "display", "none");
+      await ctx.ui.custom<void>((tui, theme, _keys, done) => createBrowser({
+        title: `Tasks · ${progress(state)} complete`, theme, height: () => Math.max(1, tui.terminal.rows - 6),
+        items: state.tasks.map((task, index) => ({ title: titles[index], detail: taskDetails(task) })),
+        selected: state.tasks.findIndex((task) => task.status === "active"),
+        requestRender: () => tui.requestRender(), done,
+      }));
     },
   });
 }

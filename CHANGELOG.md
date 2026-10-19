@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+- Add selectable `/tasks` full views with Enter/Space detail expansion, paging, navigation buttons and fullscreen mouse support.
+- Move compact overflow counts beside header progress; avoid dumping the full tree and unrelated notes in expanded mutation results.
+- Publish optional per-instance overview progress, task states and visible notes through a load-order-independent event protocol, without a dependency.
+- Default task/note notification events to all; invalid configuration still disables them safely.
+
 ## 0.8.0
 
 - Include original note text in recording and retraction desktop notifications, using the notifier's existing sanitisation and preview limits without changing agent-facing tool feedback.

@@ -10,7 +10,7 @@ Requires Node 22.19 or newer and Pi. Tested against **Pi 1.2.0**; older Pi relea
 pi install git:github.com/OscarCookeAbbott/pi-tasks
 ```
 
-Start a new session or run `/reload`. For a pinned release, append `@v0.8.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
+Start a new session or run `/reload`. For a pinned release, append `@v0.9.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
 
 Use `pi install --local <source>` for a project-scoped installation; Pi loads it after project trust is granted. To uninstall:
 
@@ -22,7 +22,7 @@ Do not also keep a copied version under `~/.pi/agent/extensions/`: it would regi
 
 ## User interface
 
-- `/tasks`: inspect every task, description, outcome and note (including retracted history), regardless of widget filters. Long content wraps rather than being clipped. Use ↑/↓, Page Up/Down, and Escape.
+- `/tasks`: inspect every task, description, outcome and note (including retracted history), regardless of widget filters. Select with ↑/↓ or Home/End; Enter/Space toggles that task's full details. Page Up/Down scrolls long expanded content, Escape closes. On-screen navigation buttons and row clicks/wheel work in Pi fullscreen mode; regular terminals retain their own mouse/scrollback handling.
 - `/tasks hidden`: hide the persistent widget.
 - `/tasks active`: show the active task and its ancestor context.
 - `/tasks incomplete`: show active, future, and waiting tasks (default).
@@ -30,9 +30,9 @@ Do not also keep a copied version under `~/.pi/agent/extensions/`: it would regi
 - `/tasks show ab`: inspect a task's status, parent, outcomes and note history.
 - `/tasks notes all|active|none`: independently control compact-widget note visibility (default `active`, unretracted notes).
 
-The widget shows at most eight task/note rows, centred near the active task. The full browser is available even when the widget is hidden. Headers show closed/total counts such as `Tasks · 3/4 complete`, without a redundant slash-command hint; completed and cancelled tasks both count as closed, including parent tasks. This is a task count, not a work estimate.
+The widget shows at most eight task/note rows, centred near the active task. The full browser is available even when the widget is hidden. Headers show closed/total counts and inline overflow, e.g. `Tasks · 3/6 complete · Showing 1-8/12`, with no overflow footer or redundant slash-command hint; completed and cancelled tasks both count as closed, including parent tasks. This is a task count, not a work estimate.
 
-Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility. Call headers use bold-accented task IDs and primary text, with readable actions. Expanded edit results show aligned before/after titles and descriptions; this comparison metadata is never added to model feedback. For add calls, the UI result simply says `Task [ab] added.` (plus explicit placement details); model-facing acknowledgements still include the title. Reminder headings are bold and high-contrast.
+Rows use boxed IDs, not order numbers: `▶ [ab] Implement`. UI markers are `▶` active, `○` future, `…` waiting, `✓` completed, and `×` cancelled. Agent-facing lists use explicit status words instead: `active [ab] Implement`. Normal tool calls/results remain visible regardless of widget visibility. Call headers use bold-accented task IDs and primary text, with readable actions. Expanded mutation results show only affected tasks and relevant descriptions/outcomes, never the entire tree or unrelated note history. Edits show aligned before/after titles and descriptions; this comparison metadata is never added to model feedback. Full trees remain available through explicit lists and the browser. For add calls, the UI result simply says `Task [ab] added.` (plus explicit placement details); model-facing acknowledgements still include the title. Reminder headings are bold and high-contrast.
 
 ## Agent tool
 
@@ -98,7 +98,7 @@ Notes cannot be edited, reparented, deleted or reactivated. Retraction and readi
 
 Note IDs use their own 3,844-entry two-character base-62 namespace. Task and note IDs may coincide; displayed task IDs always use `[ab]` and note IDs always use `<ab>`, including tool headers, acknowledgements, errors, lists and inspection. Compact TUI rows use `◆ <ab> text` for unretracted notes and `⊘ <ab> text` for retracted ones, distinct from tasks' square-bracket IDs. Tool arguments and the JSON array returned by `task_notes list` still use bare IDs. Retracted IDs are never recycled within the current branch history.
 
-Use `/tasks notes active` (default) for unretracted notes, `/tasks notes all` to include retracted history and reasons, or `/tasks notes none` to hide notes. These saved, user-only filters apply only to the compact widget; a note never appears unless its owning task is included by that view's task filter. `active` means unretracted, not only notes of the active task. Notes do not affect task counts, scheduling or completion.
+Use `/tasks notes active` (default) for unretracted notes, `/tasks notes all` to include retracted history and reasons, or `/tasks notes none` to hide notes. These saved, user-only note filters apply to the compact widget and optional overview Notes section. In the widget, a note never appears unless its owning task is included by the widget's task filter. `active` means unretracted, not only notes of the active task. Notes do not affect task counts, scheduling or completion.
 
 Explicit inspection is independent of these display preferences: `tasks list` includes notes under its selected tasks with explicit active/retracted states, `/tasks show <task-id>` includes the task's full note history, and `task_notes read` always returns the requested record. `task_notes list` is also independent of display preferences and does not repeat note text or status.
 
@@ -116,12 +116,12 @@ Configure the interval and initial visibility in `~/.pi/agent/settings.json` (or
     "reminderInterval": 30,
     "defaultVisibility": "incomplete",
     "defaultNoteVisibility": "active",
-    "notifications": "none"
+    "notifications": "all"
   }
 }
 ```
 
-Merge this into the existing settings object, then run `/reload`. The extension reads Pi's merged settings at session start. The interval must be a positive safe integer. `defaultVisibility` accepts `hidden`, `active`, `incomplete`, or `all`; `defaultNoteVisibility` accepts `all`, `active`, or `none`. Defaults apply without a saved snapshot; note visibility also takes its default when migrating an old snapshot without notes. Saved preferences are preserved. Invalid configuration warns and uses defaults: interval 30, tasks `incomplete`, notes `active`, notifications `none`. Omitted fields use the same defaults. Task changes and restoration/compaction refreshes do not wait for the interval.
+Merge this into the existing settings object, then run `/reload`. The extension reads Pi's merged settings at session start. The interval must be a positive safe integer. `defaultVisibility` accepts `hidden`, `active`, `incomplete`, or `all`; `defaultNoteVisibility` accepts `all`, `active`, or `none`. Defaults apply without a saved snapshot; note visibility also takes its default when migrating an old snapshot without notes. Saved preferences are preserved. Omitted fields default to interval 30, tasks `incomplete`, notes `active`, notifications `all`. Invalid configuration warns, resets interval/view defaults, and disables notifications for that session. Task changes and restoration/compaction refreshes do not wait for the interval.
 
 The cadence is in-memory and resets on session start/reload/resume. Reminders remain ordinary append-only history, preserving existing transcript prefixes; provider cache behaviour is still provider-dependent.
 
@@ -129,23 +129,27 @@ Versioned snapshots are stored as `tasks-state` custom session entries, excluded
 
 Tools work in non-interactive modes; the persistent widget/browser require TUI mode. Agent work matching the active task is guided by reminders, not enforced by blocking other tools.
 
+## Optional overview integration
+
+When `pi-overview` is loaded, tasks publish a `[3/6 tasks]` progress badge, a hoverable Tasks section with all task states, and a Notes section respecting `/tasks notes all|active|none`. The task widget's visibility does not hide overview task rows. Empty or unreadable trees remove their contribution. Data refreshes on mutations, restoration and overview collection, regardless of load order; no overview dependency is required. These are read-only menu items and do not change agent feedback.
+
 ## Optional desktop notifications
 
-Desktop notifications default to **off**. `pi-notifications` is declared in `optionalDependencies`, pinned to a Git release; failed installation does not prevent tasks working. Load it once as a separate Pi package (dependency copies are not auto-loaded):
+Task and note notification events default to **all**, matching the normal installed configuration. `pi-notifications` is declared in `optionalDependencies`, pinned to a Git release; failed installation does not prevent tasks working. Load it once as a separate Pi package (dependency copies are not auto-loaded):
 
 ```sh
 pi install git:github.com/OscarCookeAbbott/pi-notifications
 ```
 
-Then configure `tasks.notifications` in Pi settings and `/reload`:
+No extra notification setting is required. To opt out, configure Pi settings and `/reload`:
 
 ```json
 {
-  "tasks": { "notifications": "all" }
+  "tasks": { "notifications": "none" }
 }
 ```
 
-Modes: `none` (default), `tasks` (all task mutations and saved task visibility changes), `notes` (note recording/retraction and saved note visibility changes), or `all` (both). Changes notify only after persistence succeeds; setting the same visibility again does not notify.
+Modes: `none`, `tasks` (all task mutations and saved task visibility changes), `notes` (note recording/retraction and saved note visibility changes), or `all` (both, default). Changes notify only after persistence succeeds; setting the same visibility again does not notify.
 
 Events emitted through `notifications:notify` are `tasks.add`, `tasks.edit`, `tasks.move`, `tasks.complete`, `tasks.cancel`, `tasks.visibility`, `task_notes.record`, `task_notes.retract` and `task_notes.visibility`. `notifications.events` can additionally disable individual events, e.g. `{ "tasks.add": false }`.
 
