@@ -1,6 +1,6 @@
 {
   "name": "@oscar-robin/pi-tasks",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Forward-only task trees, progress UI, and session-aware reminders for Pi.",
   "type": "module",
   "license": "MIT",
@@ -43,6 +43,9 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "optionalDependencies": {
+    "@oscar-robin/pi-notifications": "git+https://github.com/OscarCookeAbbott/pi-notifications.git#v0.1.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.2.0",

@@ -14,12 +14,14 @@ function harness(settings: unknown = {}) {
   const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const entries: Entry[] = [];
   const notifications: string[] = [];
+  const events: Array<{ name: string; payload: { event: string; title: string; message: string } }> = [];
   const widgets = new Map<string, any>();
   const renderers = new Map<string, Function>();
   let tool: ToolDefinition<TSchema, Details>;
   let noteTool: ToolDefinition<TSchema, { response: string; note: TaskNote }>;
   let command: any;
   let failWrites = false;
+  let failNotifications = false;
   const ctx = {
     mode: "tui",
     sessionManager: { getBranch: () => entries },
@@ -43,6 +45,10 @@ function harness(settings: unknown = {}) {
     registerCommand: (_name: string, definition: any) => { command = definition; },
     registerMessageRenderer: (name: string, renderer: Function) => renderers.set(name, renderer),
     getSettings: () => settings,
+    events: { emit: (name: string, payload: { event: string; title: string; message: string }) => {
+      if (failNotifications) throw new Error("Notification listener unavailable");
+      events.push({ name, payload });
+    } },
     appendEntry: (customType: string, data: unknown) => {
       if (failWrites) throw new Error("Disk unavailable");
       entries.push({ type: "custom", customType, data });
@@ -50,7 +56,7 @@ function harness(settings: unknown = {}) {
   } as unknown as ExtensionAPI);
   const emit = (name: string, event: any = {}) => handlers.get(name)?.(event, ctx);
   return {
-    entries, notifications, widgets, renderers, ctx, emit,
+    entries, notifications, events, widgets, renderers, ctx, emit,
     get tool() { return tool!; },
     get noteTool() { return noteTool!; },
     async note(params: JsonObject) {
@@ -65,6 +71,7 @@ function harness(settings: unknown = {}) {
       return factory ? factory({}, { fg: (_color: string, text: string) => text }).render(width) : [];
     },
     failWrites(value = true) { failWrites = value; },
+    failNotifications() { failNotifications = true; },
     async call(params: JsonObject) {
       const validated = validateToolArguments(tool!, { type: "toolCall", id: "call", name: "tasks", arguments: params });
       const result = await tool!.execute("call", validated, undefined, undefined, ctx as any);
@@ -563,4 +570,56 @@ test("corrupt snapshots fail closed and persistence failures roll back in-memory
   await assert.rejects(h.call({ action: "add", title: "Not saved" }), /Disk unavailable/);
   const listed = await h.call({ action: "list" });
   assert.deepEqual(listed.details!.state, added.details!.state);
+});
+
+test("optional notifications follow persisted mutations, never reads or failed changes", async () => {
+  const h = harness({ tasks: { notifications: "all" } });
+  h.emit("session_start");
+  const id = (await h.call({ action: "add", title: "Notify me" })).details!.affectedIds[0];
+  await h.call({ action: "edit", id, title: "Updated title" });
+  const future = (await h.call({ action: "add", title: "Future" })).details!.affectedIds[0];
+  const last = (await h.call({ action: "add", title: "Last" })).details!.affectedIds[0];
+  await h.call({ action: "move", id: last, before: future });
+  const note = await h.note({ action: "record", text: "Private note text" });
+  await h.note({ action: "retract", id: note.details!.note.id, reason: "Superseded" });
+  await h.call({ action: "complete", id, outcome: "Done" });
+  await h.call({ action: "cancel", id: last, reason: "Not needed" });
+  assert.deepEqual(h.events.map(({ payload }) => payload.event), ["tasks.add", "tasks.edit", "tasks.add", "tasks.add", "tasks.move", "task_notes.record", "task_notes.retract", "tasks.complete", "tasks.cancel"]);
+  assert.ok(h.events.every(({ name, payload }) => name === "notifications:notify" && payload.title === "Pi Tasks"));
+  assert.match(h.events[1].payload.message, /Updated title/);
+  assert.ok(h.events.every(({ payload }) => !payload.message.includes("Private note text")));
+  const count = h.events.length;
+  await h.call({ action: "list" });
+  await h.note({ action: "list", taskId: id });
+  await h.note({ action: "read", id: note.details!.note.id });
+  h.emit("session_tree");
+  h.failWrites();
+  await assert.rejects(h.call({ action: "add", title: "Unsaved" }), /Disk unavailable/);
+  await assert.rejects(h.note({ action: "record", text: "Unsaved" }), /Disk unavailable/);
+  await assert.rejects(h.command.handler("hidden", h.ctx), /Disk unavailable/);
+  await assert.rejects(h.command.handler("notes none", h.ctx), /Disk unavailable/);
+  assert.equal(h.events.length, count);
+  h.failWrites(false);
+  h.failNotifications();
+  const saved = await h.call({ action: "add", title: "Saved without notifications" });
+  assert.ok(saved.details!.state.tasks.some((task) => task.title === "Saved without notifications"));
+});
+
+test("task notification modes default off and filter all task/note mutations including preferences", async () => {
+  const taskEvents = ["tasks.add", "tasks.visibility"];
+  const noteEvents = ["task_notes.record", "task_notes.visibility"];
+  for (const mode of [undefined, "none", "tasks", "notes", "all", "invalid", true, null]) {
+    const h = harness(mode === undefined ? {} : { tasks: { notifications: mode } });
+    h.emit("session_start");
+    await h.call({ action: "add", title: "Task" });
+    await h.note({ action: "record", text: "Note" });
+    await h.command.handler("hidden", h.ctx);
+    await h.command.handler("notes none", h.ctx);
+    const expected = ["tasks.add", "task_notes.record", "tasks.visibility", "task_notes.visibility"].filter((event) => mode === "all" || (mode === "tasks" && taskEvents.includes(event)) || (mode === "notes" && noteEvents.includes(event)));
+    assert.deepEqual(h.events.map(({ payload }) => payload.event), expected, `mode ${mode}`);
+    if (mode === "invalid" || mode === true || mode === null) assert.match(h.notifications[0], /tasks.notifications/);
+    await h.command.handler("hidden", h.ctx);
+    await h.command.handler("notes none", h.ctx);
+    assert.equal(h.events.length, expected.length, "Unchanged preferences must not notify");
+  }
 });

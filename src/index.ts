@@ -25,6 +25,8 @@ const parameters = Type.Object({
   visibility: Type.Optional(visibility),
 }, { additionalProperties: false });
 
+type NotificationMode = "none" | "tasks" | "notes" | "all";
+
 const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted", "◆": "toolOutput", "⊘": "dim" } as const;
 const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state).replace(/^Active task /, "Active task reminder "), display: true });
 const progress = (state: TaskState) => `${state.tasks.filter(terminal).length}/${state.tasks.length}`;
@@ -44,6 +46,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
   let restoreError: string | undefined;
   let skipStartingUser = false;
   let cadence = new ReminderCadence();
+  let notificationMode: NotificationMode = "none";
 
   pi.registerMessageRenderer("tasks-reminder", (message, { outputPad }, theme) => {
     const text = typeof message.content === "string" ? message.content : message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
@@ -55,6 +58,16 @@ export default function tasksExtension(pi: ExtensionAPI): void {
 
   function persist(): void {
     pi.appendEntry("tasks-state", structuredClone(state));
+  }
+
+  function notifyChange(event: string, message: string): void {
+    const category = event.startsWith("task_notes.") ? "notes" : "tasks";
+    if (notificationMode !== "all" && notificationMode !== category) return;
+    try {
+      pi.events.emit("notifications:notify", { event, title: "Pi Tasks", message });
+    } catch {
+      // Optional notification consumers must not affect persisted task changes.
+    }
   }
 
   function updateWidget(ctx: ExtensionContext): void {
@@ -108,14 +121,18 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       }
       const configuredNotes = (settings as { tasks?: { defaultNoteVisibility?: unknown } }).tasks?.defaultNoteVisibility;
       if (configuredNotes !== undefined && !["all", "active", "none"].includes(configuredNotes as string)) throw new Error("tasks.defaultNoteVisibility must be all, active, or none.");
+      const configuredNotifications = (settings as { tasks?: { notifications?: unknown } }).tasks?.notifications;
+      if (configuredNotifications !== undefined && !["none", "tasks", "notes", "all"].includes(configuredNotifications as string)) throw new Error("tasks.notifications must be none, tasks, notes, or all.");
+      notificationMode = (configuredNotifications ?? "none") as NotificationMode;
       defaultVisibility = (configuredVisibility ?? "incomplete") as Visibility;
       defaultNoteVisibility = (configuredNotes ?? "active") as NoteVisibility;
       cadence = new ReminderCadence(interval);
     } catch (error) {
       defaultVisibility = "incomplete";
       defaultNoteVisibility = "active";
+      notificationMode = "none";
       cadence = new ReminderCadence();
-      ctx.ui.notify(`Tasks config: ${error instanceof Error ? error.message : String(error)} Using the default interval of 30 and visibility incomplete; notes active.`, "warning");
+      ctx.ui.notify(`Tasks config: ${error instanceof Error ? error.message : String(error)} Using the default interval of 30 and visibility incomplete; notes active; notifications none.`, "warning");
     }
     restore(ctx);
   });
@@ -194,6 +211,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         }
         checkpoint = reminder(state);
         updateWidget(ctx);
+        notifyChange(`tasks.${params.action}`, response);
       }
       cadence.reset();
       return {
@@ -272,6 +290,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         updateWidget(ctx);
       }
       const response = params.action === "read" ? describeNote(state, note) : `Note ${noteId(note.id)} ${params.action === "record" ? "recorded" : "retracted"} for task ${taskId(note.taskId)}.`;
+      if (params.action !== "read") notifyChange(`task_notes.${params.action}`, response);
       cadence.reset();
       return { content: [{ type: "text", text: response }], details: { response, note: structuredClone(note) } };
     },
@@ -313,6 +332,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         state = { ...state, noteVisibility: value.slice(6) as NoteVisibility };
         try { persist(); } catch (error) { state = previous; throw error; }
         updateWidget(ctx);
+        if (previous.noteVisibility !== state.noteVisibility) notifyChange("task_notes.visibility", `Note visibility: ${state.noteVisibility}`);
         return;
       }
       if (["hidden", "active", "incomplete", "all"].includes(value)) {
@@ -320,6 +340,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         state = { ...state, visibility: value as Visibility };
         try { persist(); } catch (error) { state = previous; throw error; }
         updateWidget(ctx);
+        if (previous.visibility !== state.visibility) notifyChange("tasks.visibility", `Task visibility: ${state.visibility}`);
         return;
       }
       if (value.startsWith("show ")) {

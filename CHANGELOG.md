@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- Add opt-in desktop notifications for all task/note mutations and saved visibility changes, with `tasks.notifications` modes none (default), tasks, notes and all.
+- Declare pi-notifications as an optional Git dependency and emit through `notifications:notify`; absent or failed notification consumers never change task results.
+
 ## 0.6.1
 
 - Standardize displayed task IDs as [ab] and note IDs as <ab> through shared helpers across headers, acknowledgements, errors, lists, reminders and inspection.

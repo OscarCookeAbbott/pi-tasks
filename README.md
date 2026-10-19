@@ -10,7 +10,7 @@ Requires Node 22.19 or newer and Pi. Tested against **Pi 1.2.0**; older Pi relea
 pi install git:github.com/OscarCookeAbbott/pi-tasks
 ```
 
-Start a new session or run `/reload`. For a pinned release, append `@v0.6.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
+Start a new session or run `/reload`. For a pinned release, append `@v0.7.0` to the source. Unpinned installs follow the repository's default branch when running `pi update --extensions`.
 
 Use `pi install --local <source>` for a project-scoped installation; Pi loads it after project trust is granted. To uninstall:
 
@@ -115,18 +115,41 @@ Configure the interval and initial visibility in `~/.pi/agent/settings.json` (or
   "tasks": {
     "reminderInterval": 30,
     "defaultVisibility": "incomplete",
-    "defaultNoteVisibility": "active"
+    "defaultNoteVisibility": "active",
+    "notifications": "none"
   }
 }
 ```
 
-Merge this into the existing settings object, then run `/reload`. The extension reads Pi's merged settings at session start. The interval must be a positive safe integer. `defaultVisibility` accepts `hidden`, `active`, `incomplete`, or `all`; `defaultNoteVisibility` accepts `all`, `active`, or `none`. Defaults apply without a saved snapshot; note visibility also takes its default when migrating an old snapshot without notes. Saved preferences are preserved. Invalid configuration warns and uses defaults: interval 30, tasks `incomplete`, notes `active`. Omitted fields use the same defaults. Task changes and restoration/compaction refreshes do not wait for the interval.
+Merge this into the existing settings object, then run `/reload`. The extension reads Pi's merged settings at session start. The interval must be a positive safe integer. `defaultVisibility` accepts `hidden`, `active`, `incomplete`, or `all`; `defaultNoteVisibility` accepts `all`, `active`, or `none`. Defaults apply without a saved snapshot; note visibility also takes its default when migrating an old snapshot without notes. Saved preferences are preserved. Invalid configuration warns and uses defaults: interval 30, tasks `incomplete`, notes `active`, notifications `none`. Omitted fields use the same defaults. Task changes and restoration/compaction refreshes do not wait for the interval.
 
 The cadence is in-memory and resets on session start/reload/resume. Reminders remain ordinary append-only history, preserving existing transcript prefixes; provider cache behaviour is still provider-dependent.
 
 Versioned snapshots are stored as `tasks-state` custom session entries, excluded from model context. Version 2 includes notes and their visibility; version 1 snapshots migrate without losing tasks or saved task visibility. Reload, resume, fork, and `/tree` navigation restore from the current branch only. Compaction does not delete durable task/note state. Unreadable snapshots disable mutation rather than silently overwriting history. Session navigation can restore earlier progress; forward-only tasks and irreversible note retraction apply inside a branch. Notes are available as structured snapshot data for future compaction/reporting, but this extension does not yet prune task spans or change compaction summaries.
 
 Tools work in non-interactive modes; the persistent widget/browser require TUI mode. Agent work matching the active task is guided by reminders, not enforced by blocking other tools.
+
+## Optional desktop notifications
+
+Desktop notifications default to **off**. `pi-notifications` is declared in `optionalDependencies`, pinned to a Git release; failed installation does not prevent tasks working. Load it once as a separate Pi package (dependency copies are not auto-loaded):
+
+```sh
+pi install git:github.com/OscarCookeAbbott/pi-notifications
+```
+
+Then configure `tasks.notifications` in Pi settings and `/reload`:
+
+```json
+{
+  "tasks": { "notifications": "all" }
+}
+```
+
+Modes: `none` (default), `tasks` (all task mutations and saved task visibility changes), `notes` (note recording/retraction and saved note visibility changes), or `all` (both). Changes notify only after persistence succeeds; setting the same visibility again does not notify.
+
+Events emitted through `notifications:notify` are `tasks.add`, `tasks.edit`, `tasks.move`, `tasks.complete`, `tasks.cancel`, `tasks.visibility`, `task_notes.record`, `task_notes.retract` and `task_notes.visibility`. `notifications.events` can additionally disable individual events, e.g. `{ "tasks.add": false }`.
+
+Messages contain IDs, titles and status, not descriptions, outcomes or note text. One task-operation notification includes automatically closed ancestors; parents with unfinished children are described as waiting. With no active notification consumer, events are ignored. Consumer failures do not change task results. Reads, lists, restoration and failed mutations never emit notifications.
 
 ## Development
 
