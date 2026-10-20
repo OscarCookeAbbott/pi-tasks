@@ -55,9 +55,9 @@ function previewText(text: string, expanded: boolean, theme: Theme): Component {
   };
 }
 
-function compareValues(label: string, before: string, after: string, reference = ""): string[] {
+function compareValues(label: string, before: string, after: string): string[] {
   return [["before:", before], ["after:", after]].map(([kind, text]) => {
-    const prefix = `${label} ${kind.padEnd(7)} ${reference ? `${reference} ` : ""}`;
+    const prefix = `${label} ${kind.padEnd(7)} `;
     return prefix + text.replace(/\n/g, `\n${" ".repeat(prefix.length)}`);
   });
 }
@@ -99,7 +99,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (restoreError || !state.tasks.length) { pi.events.emit("overview:remove", "tasks"); return; }
       const statuses = { active: "running", future: "pending", waiting: "waiting", completed: "complete", cancelled: "cancelled" };
       const items = new Map<string, TaskOverviewItem>(state.tasks.map((task) => [task.id, {
-        title: `Task: ${taskId(task.id)} ${task.title}`, state: statuses[task.status], kind: "task", subtitle: task.status,
+        title: `${taskId(task.id)} ${task.title}`, state: statuses[task.status], kind: "task", subtitle: task.status,
         body: [task.description, task.ownOutcome && task.ownOutcome !== task.outcome ? `Own work\n${task.ownOutcome}` : "", task.outcome ? `Outcome\n${task.outcome}` : ""].filter(Boolean).join("\n\n"),
         detail: taskDetails(task, false), children: [],
       }]));
@@ -112,7 +112,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         const item = items.get(task.id)!;
         const subtasks = item.children;
         const notes: TaskOverviewItem[] = state.notes.filter((note) => note.taskId === task.id && state.noteVisibility !== "none" && (state.noteVisibility === "all" || note.retractedAt === undefined)).map((note) => ({
-          title: `Note: ${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled", kind: "note",
+          title: `${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled", kind: "note",
           subtitle: note.retractedAt === undefined ? "Task note" : "Retracted note", body: note.text + (note.retractedAt === undefined ? "" : `\n\nRetraction reason\n${note.reason ?? ""}`),
           detail: describeNote(state, note), children: [],
         }));
@@ -279,13 +279,12 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       cadence.reset();
       return {
         content: [{ type: "text", text: [response, checkpoint].filter(Boolean).join("\n") }],
-        details: { response, displayResponse, displayBody: params.action === "list" ? undefined : params.description || params.outcome || params.reason, state: structuredClone(state), affectedIds, before: params.action === "edit" ? structuredClone(previous.tasks.find((task) => task.id === params.id)) : undefined },
+        details: { response, displayResponse, listVisibility: params.action === "list" ? params.visibility ?? "all" : undefined, displayBody: params.action === "list" ? undefined : params.description || params.outcome || params.reason, state: structuredClone(state), affectedIds, before: params.action === "edit" ? structuredClone(previous.tasks.find((task) => task.id === params.id)) : undefined },
       };
     },
     renderCall(args, theme) {
       return new Text(
         theme.fg("toolTitle", theme.bold("tasks")) + theme.fg(args.action ? "toolTitle" : "muted", ` ${args.action ?? "..."}`)
-        + (args.id && args.title ? theme.fg("toolTitle", ":") : "")
         + (args.id ? theme.fg("accent", theme.bold(` ${taskId(args.id)}`)) : "")
         + (args.title ? theme.fg("accent", theme.bold(` ${headerText(args.title)}`)) : ""),
         0, 0,
@@ -293,23 +292,26 @@ export default function tasksExtension(pi: ExtensionAPI): void {
     },
     renderResult(result, { expanded }, theme, context) {
       const color = context?.isError ? "error" : "toolOutput";
-      const details = result.details as { response: string; displayResponse?: string; displayBody?: string; state: TaskState; affectedIds?: string[]; before?: Task } | undefined;
+      const details = result.details as { response: string; displayResponse?: string; displayBody?: string; listVisibility?: Visibility; state: TaskState; affectedIds?: string[]; before?: Task } | undefined;
       if (typeof details?.response !== "string") return new Text(theme.fg(color, result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n")), 0, 0);
+      if (details.listVisibility && !context?.isError) {
+        return previewText(treeLines(details.state, details.listVisibility, expanded ? "full" : "display", "all").join("\n") || "No tasks in this view.", expanded, theme);
+      }
       const lines: string[] = [];
       const comparisons: string[] = [];
       if (expanded && details.before) {
         const after = details.state.tasks.find((task) => task.id === details.before!.id);
         if (after) {
-          if (details.before.title !== after.title) comparisons.push(...compareValues("Task", details.before.title, after.title, taskId(after.id)));
+          if (details.before.title !== after.title) comparisons.push(...compareValues(`Task ${taskId(after.id)}`, details.before.title, after.title));
           if (details.before.description !== after.description) comparisons.push(...compareValues("Description", details.before.description || "(none)", after.description || "(none)"));
         }
       }
       if (expanded) {
         for (const task of details.state.tasks.filter((task) => details.affectedIds?.includes(task.id))) {
-          if (task.id !== details.before?.id || task.title === details.before.title) lines.push(`Task: ${taskId(task.id)} ${task.title}`);
-          if (task.description?.trim() && (!details.before || details.before.description === task.description)) lines.push(`Description: ${taskId(task.id)} ${task.description}`);
-          if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`Own work: ${taskId(task.id)} ${task.ownOutcome}`);
-          if (task.outcome) lines.push(`Outcome: ${taskId(task.id)} ${task.outcome}`);
+          if (task.id !== details.before?.id || task.title === details.before.title) lines.push(`${taskId(task.id)} ${task.title}`);
+          if (task.description?.trim() && (!details.before || details.before.description === task.description)) lines.push(`${taskId(task.id)} Description: ${task.description}`);
+          if (task.ownOutcome && task.ownOutcome !== task.outcome) lines.push(`${taskId(task.id)} Own work: ${task.ownOutcome}`);
+          if (task.outcome) lines.push(`${taskId(task.id)} Outcome: ${task.outcome}`);
         }
       }
       const summary = plainText(details.displayResponse ?? details.response);
@@ -379,7 +381,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       const text = result.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
       const details = result.details as { response?: string; action?: string; note?: TaskNote; notes?: TaskNote[] } | undefined;
       if (context?.isError || isPartial || !details) return new Text(theme.fg(context?.isError ? "error" : "toolOutput", plainText(text)), 0, 0);
-      if (Array.isArray(details.notes)) return previewText(details.notes.map((note) => `Note ${note.retractedAt === undefined ? "active" : "retracted"}: ${noteId(note.id)} ${expanded ? note.text : headerText(note.text)}`).join("\n") || "No notes.", expanded, theme);
+      if (Array.isArray(details.notes)) return previewText(details.notes.map((note) => `${note.retractedAt === undefined ? "◆" : "⊘"} ${noteId(note.id)} ${expanded ? note.text : headerText(note.text)}`).join("\n") || "No notes.", expanded, theme);
       if (!details.note || !details.action) return new Text(theme.fg("toolOutput", plainText(text)), 0, 0);
       const note = details.note;
       const component = new Container();
@@ -395,7 +397,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
 
   function taskDetails(task: Task, includeNotes = true): string {
     const notes = includeNotes ? state.notes.filter((note) => note.taskId === task.id).map((note) => plainText(describeNote(state, note))) : [];
-    return `Task: ${taskId(task.id)} ${task.title}\nStatus: ${task.status}\nParent: ${task.parent === null ? "root" : taskId(task.parent)}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`;
+    return `${taskId(task.id)} ${task.title}\nStatus: ${task.status}\nParent: ${task.parent === null ? "root" : taskId(task.parent)}${task.description?.trim() ? `\nDescription:\n${plainText(task.description)}` : ""}${task.ownOutcome ? `\nOwn work: ${task.ownOutcome}` : ""}${task.outcome ? `\nOutcome: ${task.outcome}` : ""}${notes.length ? `\n\n${notes.join("\n\n")}` : ""}`;
   }
 
   pi.registerCommand("tasks", {
@@ -452,7 +454,7 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         return [
           { id: task.id, title: titles[index], detail: taskDetails(task, false) },
           ...state.notes.filter((note) => note.taskId === task.id).map((note) => ({
-            id: `note:${note.id}`, title: `${indent}  ${note.retractedAt === undefined ? "◆" : "⊘"} Note ${note.retractedAt === undefined ? "active" : "retracted"}: ${noteId(note.id)} ${note.text}`,
+            id: `note:${note.id}`, title: `${indent}  ${note.retractedAt === undefined ? "◆" : "⊘"} ${noteId(note.id)} ${note.text}`,
             detail: describeNote(state, note),
           })),
         ];

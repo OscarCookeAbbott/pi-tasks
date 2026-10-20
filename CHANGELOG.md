@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1
+
+- Restore compact status-marker/ID/title rows for tasks and notes in widgets, browsers, tool lists and native overview contributions.
+- Restore space-separated tool call headers and structured inspection/comparison layouts; keep label-first punctuation only on existing sentence-style messages.
+
 ## 0.12.0
 
 - Put labels before ID/title pairs across mutation feedback, active checkpoints/reminders, trees, note previews, inspection and overview contributions (e.g. `Task added: [ab] Build`). Keep ID-only acknowledgements and raw note content unchanged.

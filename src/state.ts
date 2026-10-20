@@ -108,7 +108,7 @@ export function transitionNote(state: TaskState, action: NoteAction, seed?: stri
 
 export function describeNote(state: TaskState, note: TaskNote): string {
   const owner = findTask(state, note.taskId);
-  return `Note ${noteId(note.id)} ${note.retractedAt === undefined ? "active" : "retracted"}\nTask: ${taskId(owner.id)} ${owner.title}\nCreated: ${new Date(note.createdAt).toISOString()}\nText:\n${note.text}${note.retractedAt === undefined ? "" : `\nRetracted: ${new Date(note.retractedAt).toISOString()}\nReason: ${note.reason}`}`;
+  return `Note ${noteId(note.id)} ${note.retractedAt === undefined ? "active" : "retracted"}\nTask ${taskId(owner.id)}: ${owner.title}\nCreated: ${new Date(note.createdAt).toISOString()}\nText:\n${note.text}${note.retractedAt === undefined ? "" : `\nRetracted: ${new Date(note.retractedAt).toISOString()}\nReason: ${note.reason}`}`;
 }
 
 function insertionIndex(state: TaskState, parent: string | null, before?: string, after?: string): number {
@@ -317,7 +317,6 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
     notesByTask.set(note.taskId, notes);
   }
   const symbols: Record<Status, string> = { future: "○", active: "▶", waiting: "…", completed: "✓", cancelled: "×" };
-  const labels: Record<Status, string> = { future: "Future task", active: "Active task", waiting: "Waiting task", completed: "Completed task", cancelled: "Cancelled task" };
   const depths = new Map<string, number>();
   return state.tasks.flatMap((task) => {
     const depth = task.parent === null ? 0 : depths.get(task.parent)! + 1;
@@ -325,7 +324,7 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
     if (!included.has(task.id)) return [];
     const title = format === "display" ? singleLine(task.title) : task.title;
     return [
-      `${"  ".repeat(depth)}${format === "text" ? "" : `${symbols[task.status]} `}${labels[task.status]}: ${taskId(task.id)} ${title}`,
+      `${"  ".repeat(depth)}${format === "text" ? task.status : symbols[task.status]} ${taskId(task.id)} ${title}`,
       ...(format !== "display" && task.description?.trim() ? [`${"  ".repeat(depth + 1)}Description: ${task.description}`] : []),
       ...(format === "full" ? [
         ...(task.status === "waiting" ? [`${"  ".repeat(depth + 1)}Pending: ${task.disposition}`] : []),
@@ -334,8 +333,8 @@ export function treeLines(state: TaskState, visibility: Visibility = state.visib
       ] : []),
       ...(notesByTask.get(task.id) ?? []).map((note) => {
         const retracted = note.retractedAt !== undefined;
-        if (format === "full") return `${"  ".repeat(depth + 1)}${retracted ? "⊘" : "◆"} Note ${retracted ? "retracted" : "active"}: ${noteId(note.id)} · ${new Date(note.createdAt).toISOString()}\n${"  ".repeat(depth + 2)}${note.text}${retracted ? `\n${"  ".repeat(depth + 2)}Retracted: ${new Date(note.retractedAt!).toISOString()}\n${"  ".repeat(depth + 2)}Reason: ${note.reason}` : ""}`;
-        const prefix = `${format === "text" ? "" : `${retracted ? "⊘" : "◆"} `}Note ${retracted ? "retracted" : "active"}: ${noteId(note.id)}`;
+        if (format === "full") return `${"  ".repeat(depth + 1)}${retracted ? "⊘" : "◆"} ${noteId(note.id)} · ${new Date(note.createdAt).toISOString()}\n${"  ".repeat(depth + 2)}${note.text}${retracted ? `\n${"  ".repeat(depth + 2)}Retracted: ${new Date(note.retractedAt!).toISOString()}\n${"  ".repeat(depth + 2)}Reason: ${note.reason}` : ""}`;
+        const prefix = format === "text" ? `note ${retracted ? "retracted" : "active"} ${noteId(note.id)}` : `${retracted ? "⊘" : "◆"} ${noteId(note.id)}`;
         const text = note.text + (retracted ? ` | Reason: ${note.reason}` : "");
         return `${"  ".repeat(depth + 1)}${prefix} ${format === "display" ? singleLine(text) : text}`;
       }),

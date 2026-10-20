@@ -212,12 +212,12 @@ test("all four views preserve ancestry and waiting parents while hiding terminal
   assert.deepEqual(treeLines(state, "hidden"), []);
   const active = treeLines(state, "active");
   const branch = state.tasks[1].id;
-  assert.deepEqual(active, [`… Waiting task: [${root}] Build feature`, `  … Waiting task: [${branch}] Implement`, `    ▶ Active task: [${leaf}] Test`]);
+  assert.deepEqual(active, [`… [${root}] Build feature`, `  … [${branch}] Implement`, `    ▶ [${leaf}] Test`]);
   assert.deepEqual(treeLines(state, "all", "text"), [
-    `Waiting task: [${root}] Build feature`,
-    `  Waiting task: [${branch}] Implement`,
-    `    Active task: [${leaf}] Test`,
-    `Future task: [${next}] Ship`,
+    `waiting [${root}] Build feature`,
+    `  waiting [${branch}] Implement`,
+    `    active [${leaf}] Test`,
+    `future [${next}] Ship`,
   ]);
   assert.equal(treeLines(state, "incomplete").length, 4);
   const closed = transition(state, { action: "cancel", id: leaf, ancestorOutcomes: Object.fromEntries(closingParents(state, leaf).map((id) => [id, "Done."])) });
@@ -225,10 +225,10 @@ test("all four views preserve ancestry and waiting parents while hiding terminal
   assert.match(treeLines(closed, "active")[0], new RegExp(next));
   assert.equal(treeLines(closed, "all").length, 4);
   assert.deepEqual(treeLines(closed, "all", "text"), [
-    `Completed task: [${root}] Build feature`,
-    `  Completed task: [${branch}] Implement`,
-    `    Cancelled task: [${leaf}] Test`,
-    `Active task: [${next}] Ship`,
+    `completed [${root}] Build feature`,
+    `  completed [${branch}] Implement`,
+    `    cancelled [${leaf}] Test`,
+    `active [${next}] Ship`,
   ]);
   assert.equal(reminder(closed), `Active task: [${next}] Ship`);
   assert.equal(reminder(emptyState()), "No active task.");
