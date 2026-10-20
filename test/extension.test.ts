@@ -9,7 +9,7 @@ import { activeTask, emptyState, transition, type TaskNote, type TaskState } fro
 
 type Entry = { type: string; customType?: string; data?: unknown };
 type Details = { response: string; state: TaskState; affectedIds: string[] };
-type OverviewItemData = { title: string; state: string; detail?: string; children?: OverviewItemData[] };
+type OverviewItemData = { title: string; state: string; kind?: string; subtitle?: string; body?: string; detail?: string; children?: OverviewItemData[] };
 type OverviewData = { id: string; badge: string; sections: Array<{ title: string; items: OverviewItemData[] }> };
 
 function harness(settings: unknown = {}) {
@@ -656,7 +656,7 @@ test("optional overview publishes task progress/states and visible notes even wi
   assert.equal(contribution.badge, "0/2 tasks");
   assert.deepEqual(contribution.sections[0].items.map((item) => item.state), ["running", "pending"]);
   assert.equal(contribution.sections.length, 1);
-  assert.match(contribution.sections[0].items[0].children![0].title, /Keep this decision/);
+  assert.match(contribution.sections[0].items[0].children![0].children![0].title, /Keep this decision/);
   await h.call({ action: "complete", id: first.details!.affectedIds[0], outcome: "Built" });
   await h.command.handler("hidden", h.ctx);
   await h.command.handler("notes none", h.ctx);
@@ -687,10 +687,15 @@ test("overview nests subtasks and notes under their owners with complete task me
   const root = contribution.sections[0].items[0];
   assert.match(root.detail!, /Full description\nx{200}/);
   assert.match(root.detail!, /Status:/);
-  assert.ok(root.children!.some((item) => item.title.includes("Parent note")));
-  const child = root.children!.find((item) => item.title.includes("Child") && item.title.includes("["))!;
-  assert.match(child.children![0].title, /Child note/);
-  assert.match(child.children![0].detail!, /Child note/);
+  assert.equal(root.kind, "task");
+  assert.match(root.body!, /Full description/);
+  const notes = root.children!.find((item) => item.title === "Notes")!;
+  assert.equal(notes.kind, "group");
+  assert.equal(notes.children![0].kind, "note");
+  assert.equal(notes.children![0].body, "Parent note");
+  const child = root.children!.find((item) => item.title === "Subtasks")!.children![0];
+  assert.equal(child.kind, "task");
+  assert.match(child.children![0].children![0].detail!, /Child note/);
 });
 
 test("mutations do not dump unrelated tasks or notes to the agent or expanded tool result", async () => {

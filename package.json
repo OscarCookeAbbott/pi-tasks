@@ -1,6 +1,6 @@
 {
   "name": "@oscar-robin/pi-tasks",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Forward-only task trees, progress UI, and session-aware reminders for Pi.",
   "type": "module",
   "license": "MIT",

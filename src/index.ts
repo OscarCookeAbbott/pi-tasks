@@ -27,7 +27,7 @@ const parameters = Type.Object({
 }, { additionalProperties: false });
 
 type NotificationMode = "none" | "tasks" | "notes" | "all";
-type TaskOverviewItem = { title: string; state: string; detail: string; children: TaskOverviewItem[] };
+type TaskOverviewItem = { title: string; state: string; kind: "task" | "note" | "group"; subtitle?: string; body?: string; detail: string; children: TaskOverviewItem[] };
 
 const markers = { "▶": "accent", "✓": "success", "×": "dim", "…": "warning", "○": "muted", "◆": "toolOutput", "⊘": "dim" } as const;
 const message = (state: TaskState) => ({ customType: "tasks-reminder", content: reminder(state).replace(/^Active task /, "Active task reminder "), display: true });
@@ -78,19 +78,28 @@ export default function tasksExtension(pi: ExtensionAPI): void {
       if (restoreError || !state.tasks.length) { pi.events.emit("overview:remove", "tasks"); return; }
       const statuses = { active: "running", future: "pending", waiting: "waiting", completed: "complete", cancelled: "cancelled" };
       const items = new Map<string, TaskOverviewItem>(state.tasks.map((task) => [task.id, {
-        title: `${taskId(task.id)} ${task.title}`, state: statuses[task.status], detail: taskDetails(task, false), children: [],
+        title: `${taskId(task.id)} ${task.title}`, state: statuses[task.status], kind: "task", subtitle: task.status,
+        body: [task.description, task.ownOutcome && task.ownOutcome !== task.outcome ? `Own work\n${task.ownOutcome}` : "", task.outcome ? `Outcome\n${task.outcome}` : ""].filter(Boolean).join("\n\n"),
+        detail: taskDetails(task, false), children: [],
       }]));
       const roots: TaskOverviewItem[] = [];
       for (const task of state.tasks) {
         const item = items.get(task.id)!;
         if (task.parent === null) roots.push(item); else items.get(task.parent)!.children.push(item);
       }
-      for (const note of state.notes) {
-        if (state.noteVisibility === "none" || (state.noteVisibility === "active" && note.retractedAt !== undefined)) continue;
-        items.get(note.taskId)!.children.push({
-          title: `${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled",
+      for (const task of state.tasks) {
+        const item = items.get(task.id)!;
+        const subtasks = item.children;
+        const notes: TaskOverviewItem[] = state.notes.filter((note) => note.taskId === task.id && state.noteVisibility !== "none" && (state.noteVisibility === "all" || note.retractedAt === undefined)).map((note) => ({
+          title: `${noteId(note.id)} ${note.text}`, state: note.retractedAt === undefined ? "unknown" : "cancelled", kind: "note",
+          subtitle: note.retractedAt === undefined ? "Task note" : "Retracted note", body: note.text + (note.retractedAt === undefined ? "" : `\n\nRetraction reason\n${note.reason ?? ""}`),
           detail: describeNote(state, note), children: [],
-        });
+        }));
+        item.subtitle = [task.status[0].toUpperCase() + task.status.slice(1), subtasks.length ? `${subtasks.length} subtask${subtasks.length === 1 ? "" : "s"}` : "", notes.length ? `${notes.length} note${notes.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+        item.children = [
+          ...(subtasks.length ? [{ title: "Subtasks", state: "unknown", kind: "group" as const, detail: "", children: subtasks }] : []),
+          ...(notes.length ? [{ title: "Notes", state: "unknown", kind: "group" as const, detail: "", children: notes }] : []),
+        ];
       }
       pi.events.emit("overview:publish", { id: "tasks", badge: `${progress(state)} tasks`, sections: [{ title: "Tasks", items: roots }] });
     } catch { /* Overview is optional and must not affect tasks. */ }

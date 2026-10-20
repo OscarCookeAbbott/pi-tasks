@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.0
+
+- Group owned Subtasks and Notes explicitly in overview task menus, with typed native presentation, readable status/count subtitles and focused content-card bodies.
+- Keep full metadata available for copying while giving notes their own text/retraction context rather than a mixed task-detail wall.
+
 ## 0.10.0
 
 - Publish complete task metadata and recursive task/note ownership to the overview menu, without item truncation.
