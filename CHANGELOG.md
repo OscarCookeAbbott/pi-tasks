@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0
+
+- Put labels before ID/title pairs across mutation feedback, active checkpoints/reminders, trees, note previews, inspection and overview contributions (e.g. `Task added: [ab] Build`). Keep ID-only acknowledgements and raw note content unchanged.
+- Use concise blue mutation acknowledgements and bounded description/outcome previews without exposing workflow checkpoints in the TUI.
+- Move note bodies/retraction reasons out of headers into expandable result previews; retain compact agent mutations and ID-only note listings.
+- Preview note listings for users and keep full note history available on expansion/inspection.
+
 ## 0.11.0
 
 - Group owned Subtasks and Notes explicitly in overview task menus, with typed native presentation, readable status/count subtitles and focused content-card bodies.

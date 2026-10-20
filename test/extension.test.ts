@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { test } from "node:test";
 import { validateToolArguments, type JsonObject } from "@earendil-works/pi-ai";
 import { createEventBus, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -105,10 +106,15 @@ test("task descriptions are optional, independently editable and show aligned be
   const before = expanded.find((line) => line.includes("Before title"))!;
   const after = expanded.find((line) => line.includes("After title"))!;
   assert.equal(before.indexOf("Before title"), after.indexOf("After title"));
+  assert.match(expanded.join("\n"), /Task before: \[\w{2}\] Before title/);
+  assert.match(expanded.join("\n"), /Task after:  \[\w{2}\] After title/);
   assert.match(expanded.join("\n"), /Description before: Before description/);
   assert.match(expanded.join("\n"), /Description after:  After description/);
   assert.doesNotMatch(changed.content[0].type === "text" ? changed.content[0].text : "", /Before title|Before description/);
-  await h.call({ action: "edit", id, description: "Description only" });
+  const descriptionOnly = await h.call({ action: "edit", id, description: "Description only" });
+  const descriptionView = render(descriptionOnly, { expanded: true }, theme, {}).render(200).join("\n");
+  assert.match(descriptionView, /After title/);
+  assert.doesNotMatch(descriptionView, /Task (before|after):/);
   const listed = await h.call({ action: "list" });
   assert.match(listed.details!.response, /Description: Description only/);
   assert.ok(!h.widgetLines().join("\n").includes("Description only"));
@@ -118,6 +124,58 @@ test("task descriptions are optional, independently editable and show aligned be
   assert.equal((await h.call({ action: "list" })).details!.state.tasks[0].description, "Description only");
   await h.call({ action: "edit", id, description: "" });
   assert.equal((await h.call({ action: "list" })).details!.state.tasks[0].description, "");
+});
+
+test("ID and title pairs use label-first formatting across agent and UI surfaces", async () => {
+  const h = harness();
+  const added = await h.call({ action: "add", title: "Build" });
+  const id = added.details!.affectedIds[0];
+  assert.equal(added.details!.response, `Task added: [${id}] Build`);
+  assert.match(added.content[0].type === "text" ? added.content[0].text : "", /Active task: \[\w{2}\] Build/);
+  assert.equal(h.widgetLines()[1], `▶ Active task: [${id}] Build`);
+  h.emit("session_compact");
+  assert.equal(h.emit("before_agent_start", { messageType: "assistant" }).message.content, `Active task reminder: [${id}] Build`);
+  assert.equal((await h.call({ action: "list" })).details!.response, `Active task: [${id}] Build`);
+  const recorded = await h.note({ action: "record", text: "Important context" });
+  const noteId = recorded.details!.note.id;
+  assert.ok((await h.note({ action: "read", id: noteId })).details!.response.includes(`Task: [${id}] Build`));
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+  const listed = await h.note({ action: "list", taskId: id });
+  assert.equal((h.tool.renderCall! as Function)({ action: "edit", id, title: "Updated" }, theme, {}).render(200).join("\n").trimEnd(), `tasks edit: [${id}] Updated`);
+  assert.match((h.noteTool.renderResult! as Function)(listed, { expanded: false }, theme, {}).render(200).join("\n"), /Note active: <\w{2}> Important context/);
+  const item = h.overview.get("tasks")!.sections[0].items[0];
+  assert.equal(item.title, `Task: [${id}] Build`);
+  assert.equal(item.children!.find((child) => child.title === "Notes")!.children![0].title, `Note: <${noteId}> Important context`);
+  assert.equal((await h.call({ action: "complete", id, outcome: "Done" })).details!.response, `Task completed: [${id}] Build`);
+});
+
+test("note results preview content without dumping it into headers or mutation context", async () => {
+  const h = harness();
+  const owner = (await h.call({ action: "add", title: "Owner" })).details!.affectedIds[0];
+  const text = "FIRST\n" + "middle\n".repeat(20) + "LAST";
+  const recorded = await h.note({ action: "record", text });
+  const id = recorded.details!.note.id;
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+  const header = (h.noteTool.renderCall! as Function)({ action: "record", text }, theme, {}).render(80).join("\n");
+  assert.doesNotMatch(header, /FIRST|middle|LAST/);
+  const render = h.noteTool.renderResult! as Function;
+  const collapsed = render(recorded, { expanded: false }, theme, {}).render(80).join("\n");
+  assert.match(collapsed, /FIRST/);
+  assert.match(collapsed, /expand/);
+  assert.doesNotMatch(collapsed, /LAST/);
+  assert.ok(collapsed.includes(`\x1b[1m\x1b[38;2;96;165;250mNote <${id}> recorded`));
+  assert.match(render(recorded, { expanded: true }, theme, {}).render(80).join("\n"), /LAST/);
+  assert.doesNotMatch(recorded.details!.response, /FIRST|LAST/);
+  assert.ok(render(recorded, { expanded: false }, theme, {}).render(12).every((line: string) => visibleWidth(line) <= 12));
+  const retracted = await h.note({ action: "retract", id, reason: "Superseded" });
+  assert.match(render(retracted, { expanded: false }, theme, {}).render(80).join("\n"), /Superseded/);
+  const listed = await h.note({ action: "list", taskId: owner });
+  assert.equal(listed.details!.response, JSON.stringify([id]));
+  assert.match(render(listed, { expanded: false }, theme, {}).render(80).join("\n"), /FIRST/);
+  assert.match(render(listed, { expanded: false }, theme, {}).render(80).join("\n"), /retracted/);
+  const read = await h.note({ action: "read", id });
+  assert.match(read.details!.response, /LAST/);
+  assert.match(render(read, { expanded: true }, theme, {}).render(80).join("\n"), /LAST/);
 });
 
 test("note listing returns only IDs in creation order, including retracted notes and hidden owners", async () => {
@@ -204,7 +262,7 @@ test("task notes record, read and retract immutable context, including after tas
   const read = await h.note({ action: "read", id: note.id });
   assert.equal(h.entries.length, count);
   assert.match(read.details!.response, /Decision: preserve the existing API/);
-  assert.ok(read.details!.response.startsWith(`Note <${note.id}> active\nTask [${owner}]: Investigate\n`));
+  assert.ok(read.details!.response.startsWith(`Note <${note.id}> active\nTask: [${owner}] Investigate\n`));
   const retracted = await h.note({ action: "retract", id: note.id, reason: "Superseded by later findings." });
   assert.deepEqual(recorded.details!.note, note);
   assert.equal(retracted.details!.note.text, note.text);
@@ -221,7 +279,7 @@ test("task notes record, read and retract immutable context, including after tas
   const listHeader = (h.noteTool.renderCall! as Function)({ action: "list", taskId: owner }, theme, {}).render(200).join("\n").trimEnd();
   assert.equal(listHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> list</toolTitle><accent><bold> [${owner}]</bold></accent>`);
   const retractionHeader = (h.noteTool.renderCall! as Function)({ action: "retract", id: note.id, reason: "Superseded" }, theme, {}).render(200).join("\n").trimEnd();
-  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> retract</toolTitle><accent><bold> <${note.id}></bold></accent><accent><bold> — Superseded</bold></accent>`);
+  assert.equal(retractionHeader, `<toolTitle><bold>task_notes</bold></toolTitle><toolTitle> retract</toolTitle><accent><bold> <${note.id}></bold></accent>`);
 });
 
 test("note visibility is independent, defaults on, persists and never exposes notes of filtered tasks", async () => {
@@ -237,24 +295,25 @@ test("note visibility is independent, defaults on, persists and never exposes no
   assert.equal(h.widgetLines()[0], "Tasks · 0/1 complete");
   for (const width of [1, 12, 80]) assert.ok(h.widgetLines(width).every((line) => !/[\r\n\t]/.test(line) && visibleWidth(line) <= width));
   await h.command.handler("notes all", h.ctx);
-  assert.ok(h.widgetLines().some((line) => /⊘ <[0-9a-zA-Z]{2}>.*Old decision/.test(line)));
+  assert.ok(h.widgetLines().some((line) => /⊘ Note retracted: <[0-9a-zA-Z]{2}>.*Old decision/.test(line)));
   h.emit("session_tree");
   assert.equal((await h.call({ action: "list" })).details!.state.noteVisibility, "all");
   await h.command.handler("notes none", h.ctx);
-  assert.deepEqual(h.widgetLines(), ["Tasks · 0/1 complete", `▶ [${owner}] Work`]);
+  assert.deepEqual(h.widgetLines(), ["Tasks · 0/1 complete", `▶ Active task: [${owner}] Work`]);
   const model = await h.call({ action: "list" });
-  assert.ok(model.details!.response.includes(`note retracted <${old.details!.note.id}> Old decision`));
+  assert.ok(model.details!.response.includes(`Note retracted: <${old.details!.note.id}> Old decision`));
   assert.match(model.details!.response, /New\ndiscovery/);
   const read = await h.note({ action: "read", id: discovery.details!.note.id });
   assert.ok(read.details!.response.includes("\x1b[2A"));
   for (const [tool, result] of [[h.tool, model], [h.noteTool, read]] as const) {
     const lines: string[] = (tool.renderResult! as Function)(result, { expanded: false }, { fg: (_color: string, text: string) => text }, {}).render(80);
-    assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line) && visibleWidth(line) <= 80));
+    assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(stripVTControlCharacters(line)) && visibleWidth(line) <= 80));
+    assert.ok(!lines.join("\n").includes("\x1b[2A"));
   }
   await h.command.handler("notes all", h.ctx);
   await h.call({ action: "complete", id: owner, outcome: "Done" });
   await h.call({ action: "add", title: "Next" });
-  assert.ok(!h.widgetLines().some((line) => /^[\s]*[◆⊘] </.test(line)));
+  assert.ok(!h.widgetLines().some((line) => /^[\s]*[◆⊘] Note (active|retracted): </.test(line)));
   await h.command.handler("all", h.ctx);
   assert.ok(h.widgetLines().some((line) => /Old decision/.test(line)));
   await h.command.handler("hidden", h.ctx);
@@ -268,8 +327,8 @@ test("a clipped widget never starts with notes whose task row is outside the win
   const child = (await h.call({ action: "add", title: "Child", parent })).details!.affectedIds[0];
   for (let index = 0; index < 9; index++) await h.note({ action: "record", text: `Discovery ${index}` });
   await h.call({ action: "complete", id: parent, outcome: "Own work done" });
-  assert.equal(h.widgetLines()[1], `  ▶ [${child}] Child`);
-  assert.ok(!h.widgetLines().some((line) => /^[\s]*[◆⊘] </.test(line)));
+  assert.equal(h.widgetLines()[1], `  ▶ Active task: [${child}] Child`);
+  assert.ok(!h.widgetLines().some((line) => /^[\s]*[◆⊘] Note (active|retracted): </.test(line)));
 });
 
 test("notes follow branch snapshots and failed persistence rolls back recording, retraction and visibility", async () => {
@@ -310,7 +369,7 @@ test("historical v1 tool results remain expandable without rewriting their snaps
   assert.equal("notes" in legacy, false);
 });
 
-test("task calls use bold names, highlighted arguments and standard result colours", async () => {
+test("task calls retain headers and highlight concise mutation acknowledgements", async () => {
   const h = harness();
   const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<bold>${text}</bold>` };
   const renderCall = h.tool.renderCall! as Function;
@@ -322,12 +381,13 @@ test("task calls use bold names, highlighted arguments and standard result colou
   const resultTheme = { fg: (color: string, text: string) => { styles.push(color); return text; } };
   const renderResult = h.tool.renderResult! as Function;
   const summary = renderResult(result, { expanded: false }, { fg: (_color: string, text: string) => text }, { isError: false }).render(200).join("\n").trimEnd();
-  assert.equal(summary, `Task [${result.details!.affectedIds[0]}] added.`);
-  assert.match(result.content[0].type === "text" ? result.content[0].text : "", /added: Work/);
+  assert.equal(stripVTControlCharacters(summary), `Task [${result.details!.affectedIds[0]}] added.`);
+  assert.match(summary, /\x1b\[1m\x1b\[38;2;96;165;250m/);
+  assert.match(result.content[0].type === "text" ? result.content[0].text : "", /Task added: \[\w{2}\] Work/);
   const child = await h.call({ action: "add", title: "More\nwork", parent: result.details!.affectedIds[0] });
   const childSummary = renderResult(child, { expanded: false }, { fg: (_color: string, text: string) => text }, { isError: false }).render(200).map((line: string) => line.trimEnd()).join("\n");
-  assert.equal(childSummary, `Task [${child.details!.affectedIds[0]}] added.\nParent: [${result.details!.affectedIds[0]}]`);
-  assert.match(child.content[0].type === "text" ? child.content[0].text : "", /added: More\nwork/);
+  assert.equal(stripVTControlCharacters(childSummary), `Task [${child.details!.affectedIds[0]}] added.\nParent: [${result.details!.affectedIds[0]}]`);
+  assert.match(child.content[0].type === "text" ? child.content[0].text : "", /Task added: \[\w{2}\] More\nwork/);
   renderResult(result, { expanded: true }, resultTheme, { isError: false });
   renderResult({ content: [{ type: "text", text: "Refused." }], details: {} }, { expanded: false }, resultTheme, { isError: true });
   assert.deepEqual(styles, ["toolOutput", "muted", "error"]);
@@ -353,7 +413,7 @@ test("extension persists mutations, restores only the current branch, and keeps 
   await h.command.handler("hidden", h.ctx);
   assert.equal(h.widgets.get("tasks"), undefined);
   const listed = await h.call({ action: "list" });
-  assert.match(listed.content[0].type === "text" ? listed.content[0].text : "", /active/);
+  assert.match(listed.content[0].type === "text" ? listed.content[0].text : "", /Active task:/);
   assert.equal(listed.details!.state.visibility, "hidden");
 
   h.entries.splice(1); // A tree navigation to the first task snapshot.
@@ -371,14 +431,14 @@ test("tool schema and results support atomic parent closure and immediate active
   const childResult = await h.call({ action: "add", title: "Child", parent });
   const child = childResult.details!.state.tasks[1].id;
   const waiting = await h.call({ action: "complete", id: parent, outcome: "Own work done." });
-  assert.equal(waiting.details!.response, `Task [${parent}] waiting (completion pending): Parent`);
+  assert.equal(waiting.details!.response, `Task waiting (completion pending): [${parent}] Parent`);
   assert.match(waiting.content[0].type === "text" ? waiting.content[0].text : "", /ancestorOutcomes/);
   const count = h.entries.length;
   await assert.rejects(h.call({ action: "complete", id: child, outcome: "Child done." }), (error: unknown) => error instanceof Error && error.message.includes(`[${parent}] Parent`));
   assert.equal(h.entries.length, count);
   const closed = await h.call({ action: "complete", id: child, outcome: "Child done.", ancestorOutcomes: { [parent]: "Everything done." } });
   assert.equal(activeTask(closed.details!.state), undefined);
-  assert.equal(closed.details!.response, `Task [${child}] completed: Child\nTask [${parent}] completed: Parent`);
+  assert.equal(closed.details!.response, `Task completed: [${child}] Child\nTask completed: [${parent}] Parent`);
   assert.doesNotMatch(closed.content[0].type === "text" ? closed.content[0].text : "", /Child done|Everything done/);
   assert.equal(closed.details!.state.tasks.find((task) => task.id === parent)!.outcome, "Everything done.");
   const render = h.tool.renderResult! as Function;
@@ -392,15 +452,15 @@ test("UI uses boxed IDs and closed/total counts while agent output uses explicit
   for (const title of ["First", "Second", "Third", "Fourth"]) await h.call({ action: "add", title });
   const listed = await h.call({ action: "list" });
   const [a, b, c, d] = listed.details!.state.tasks.map((task) => task.id);
-  assert.equal(listed.details!.response, `active [${a}] First\nfuture [${b}] Second\nfuture [${c}] Third\nfuture [${d}] Fourth`);
+  assert.equal(listed.details!.response, `Active task: [${a}] First\nFuture task: [${b}] Second\nFuture task: [${c}] Third\nFuture task: [${d}] Fourth`);
   assert.doesNotMatch(listed.content[0].type === "text" ? listed.content[0].text : "", /[▶○…✓×]/);
   assert.equal(h.widgetLines()[0], "Tasks · 0/4 complete");
   const completed = await h.call({ action: "complete", id: a, outcome: "Done." });
-  assert.equal(completed.details!.response, `Task [${a}] completed: First`);
-  assert.equal(completed.content[0].type === "text" ? completed.content[0].text : "", `Task [${a}] completed: First\nActive task [${b}]: Second`);
+  assert.equal(completed.details!.response, `Task completed: [${a}] First`);
+  assert.equal(completed.content[0].type === "text" ? completed.content[0].text : "", `Task completed: [${a}] First\nActive task: [${b}] Second`);
   await h.call({ action: "cancel", id: b });
   await h.call({ action: "complete", id: c, outcome: "Done." });
-  assert.deepEqual(h.widgetLines(), ["Tasks · 3/4 complete", `▶ [${d}] Fourth`]);
+  assert.deepEqual(h.widgetLines(), ["Tasks · 3/4 complete", `▶ Active task: [${d}] Fourth`]);
   for (const width of [1, 12, 80]) assert.ok(h.widgetLines(width).every((line) => visibleWidth(line) <= width));
   await h.call({ action: "cancel", id: d });
   assert.deepEqual(h.widgetLines(), ["Tasks · 4/4 complete"]);
@@ -425,25 +485,25 @@ test("lists avoid duplicate checkpoints but preserve closure hints and hidden-vi
   const text = listed.content[0].type === "text" ? listed.content[0].text : "";
   assert.equal(text, `${listed.details!.response}\nancestorOutcomes: [${parent}]`);
   const hidden = await h.call({ action: "list", visibility: "hidden" });
-  assert.match(hidden.content[0].type === "text" ? hidden.content[0].text : "", /Active task .*Child.*ancestorOutcomes/);
+  assert.match(hidden.content[0].type === "text" ? hidden.content[0].text : "", /Active task: .*Child.*ancestorOutcomes/);
 });
 
 test("mutation feedback keeps titles and qualifies only explicit positioning", async () => {
   const h = harness();
   const first = await h.call({ action: "add", title: "First" });
   const a = activeTask(first.details!.state)!.id;
-  assert.equal(first.details!.response, `Task [${a}] added: First`);
+  assert.equal(first.details!.response, `Task added: [${a}] First`);
   assert.doesNotMatch(first.details!.response, /Position|Parent/);
   const second = await h.call({ action: "add", title: "Second", after: a });
   const b = second.details!.state.tasks[1].id;
-  assert.equal(second.details!.response, `Task [${b}] added: Second\nPosition: after sibling [${a}]`);
+  assert.equal(second.details!.response, `Task added: [${b}] Second\nPosition: after sibling [${a}]`);
   const child = await h.call({ action: "add", title: "Child", parent: a });
   const c = child.details!.affectedIds[0];
-  assert.equal(child.details!.response, `Task [${c}] added: Child\nParent: [${a}]`);
+  assert.equal(child.details!.response, `Task added: [${c}] Child\nParent: [${a}]`);
   const moved = await h.call({ action: "move", id: b, parent: a, before: c });
-  assert.equal(moved.details!.response, `Task [${b}] moved: Second\nParent: [${a}]\nPosition: before sibling [${c}]`);
+  assert.equal(moved.details!.response, `Task moved: [${b}] Second\nParent: [${a}]\nPosition: before sibling [${c}]`);
   await h.command.handler(`show ${b}`, h.ctx);
-  assert.ok(h.notifications.at(-1)!.startsWith(`[${b}] Second\nStatus: future\nParent: [${a}]`));
+  assert.ok(h.notifications.at(-1)!.startsWith(`Task: [${b}] Second\nStatus: future\nParent: [${a}]`));
   const missing = ["00", "01", "02", "03"].find((id) => ![a, b, c].includes(id))!;
   await assert.rejects(h.call({ action: "edit", id: missing, title: "Unknown" }), { message: `Unknown task [${missing}].` });
 });
@@ -477,7 +537,7 @@ test("reminders default to thirty top-level events, preserve history, and refres
   h.emit("session_start");
   const initial = h.emit("before_agent_start", { messageType: "user" });
   assert.equal(initial.message.display, true);
-  assert.match(initial.message.content, /^Active task reminder \[[0-9a-zA-Z]{2}\]: Active work/);
+  assert.match(initial.message.content, /^Active task reminder: \[[0-9a-zA-Z]{2}\] Active work/);
   h.emit("message_end", { message: { role: "user" } });
   for (let i = 0; i < 29; i++) h.emit("tool_result", { toolName: "read" });
   assert.equal(h.emit("turn_end", { entries: [] }), undefined);
@@ -523,7 +583,7 @@ test("completion resets the ticker for the next task and reminders render as vis
   const periodic = h.emit("turn_end", { entries: [] });
   const message = periodic.entries[0];
   assert.equal(message.display, true);
-  assert.match(message.content, /Active task .*Second/);
+  assert.match(message.content, /Active task reminder: .*Second/);
   assert.equal(periodic.continue, undefined);
   const renderer = h.renderers.get("tasks-reminder")!;
   for (const outputPad of [0, 2]) {
@@ -606,8 +666,8 @@ test("optional notifications follow persisted mutations, never reads or failed c
   assert.deepEqual(h.events.map(({ payload }) => payload.event), ["tasks.add", "tasks.edit", "tasks.add", "tasks.add", "tasks.move", "task_notes.record", "task_notes.retract", "tasks.complete", "tasks.cancel"]);
   assert.ok(h.events.every(({ name, payload }) => name === "notifications:notify" && payload.title === "Pi Tasks"));
   assert.match(h.events[1].payload.message, /Updated title/);
-  assert.equal(h.events[5].payload.message, `${note.details!.response}\n${noteText}`);
-  assert.equal(h.events[6].payload.message, `${retracted.details!.response}\n${noteText}`);
+  assert.equal(h.events[5].payload.message, `Note recorded: <${note.details!.note.id}> ${noteText}\nTask [${id}].`);
+  assert.equal(h.events[6].payload.message, `Note retracted: <${note.details!.note.id}> ${noteText}\nTask [${id}].`);
   assert.ok(!note.details!.response.includes(noteText));
   assert.ok(!retracted.details!.response.includes(noteText));
   const count = h.events.length;
