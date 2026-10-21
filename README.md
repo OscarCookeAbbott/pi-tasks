@@ -22,7 +22,7 @@ Do not also keep a copied version under `~/.pi/agent/extensions/`: it would regi
 
 ## User interface
 
-- `/tasks`: inspect every task, description, outcome and note (including retracted history), regardless of widget filters. Select with ↑/↓ or Home/End; Enter/Space toggles the selected task or note's full details. Notes have their own expandable rows nested under their owning task, not inline task-detail text. Page Up/Down scrolls long expanded content, Escape closes. On-screen navigation buttons and row clicks/wheel work in Pi fullscreen mode; regular terminals retain their own mouse/scrollback handling.
+- `/tasks`: opens a full-terminal overlay that covers persistent widgets without removing them; Escape restores the normal layout. Inspect every task, description, outcome and note (including retracted history), regardless of widget filters. Select with ↑/↓ or Home/End; Enter/Space toggles the selected task or note's full details. Notes have their own expandable rows nested under their owning task, not inline task-detail text. Page Up/Down scrolls long expanded content, Escape closes. On-screen navigation buttons and row clicks/wheel work in Pi fullscreen mode; regular terminals retain their own mouse/scrollback handling.
 - `/tasks hidden`: hide the persistent widget.
 - `/tasks active`: show the active task and its ancestor context.
 - `/tasks incomplete`: show active, future, and waiting tasks (default).

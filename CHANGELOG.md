@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.2
+
+- Open `/tasks` as an exactly sized full-terminal overlay, hiding duplicate persistent headers while leaving widgets live underneath and restoring them on close.
+
 ## 0.12.1
 
 - Restore compact status-marker/ID/title rows for tasks and notes in widgets, browsers, tool lists and native overview contributions.

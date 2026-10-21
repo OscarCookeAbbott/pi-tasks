@@ -460,10 +460,10 @@ export default function tasksExtension(pi: ExtensionAPI): void {
         ];
       });
       await ctx.ui.custom<void>((tui, theme, _keys, done) => createBrowser({
-        title: `Tasks · ${progress(state)} complete`, theme, height: () => Math.max(1, tui.terminal.rows - 6), items,
+        title: `Tasks · ${progress(state)} complete`, theme, height: () => Math.max(1, tui.terminal.rows - 3), items,
         selected: items.findIndex((item) => item.id === activeTask(state)?.id),
         requestRender: () => tui.requestRender(), done,
-      }));
+      }), { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 } });
     },
   });
 }

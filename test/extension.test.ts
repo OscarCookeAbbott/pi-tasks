@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { test } from "node:test";
 import { validateToolArguments, type JsonObject } from "@earendil-works/pi-ai";
 import { createEventBus, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { compositeTuiLine, visibleWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import extension from "../src/index.ts";
 import { activeTask, emptyState, transition, type TaskNote, type TaskState } from "../src/state.ts";
@@ -362,6 +362,27 @@ test("notes follow branch snapshots and failed persistence rolls back recording,
   invalid.emit("session_start");
   assert.match(invalid.notifications[0], /defaultNoteVisibility/);
   assert.equal((await invalid.call({ action: "list" })).details!.state.noteVisibility, "active");
+});
+
+test("full browser covers the viewport without removing or duplicating persistent widgets", async () => {
+  const h = harness();
+  await h.call({ action: "add", title: "Visible task" });
+  const widget = h.widgets.get("tasks");
+  Reflect.set(h.ctx.ui, "custom", async (factory: Function, options: unknown) => {
+    assert.deepEqual(options, { overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 } });
+    const tui = { terminal: { rows: 12 }, requestRender() {} };
+    const view = factory(tui, { fg: (_color: string, text: string) => text }, {}, () => {});
+    for (const rows of [8, 12, 24]) {
+      tui.terminal.rows = rows;
+      const lines = view.render(80);
+      assert.equal(lines.length, rows, "overlay must fill exactly the terminal, including header/footer chrome");
+      assert.match(lines[0], /^Tasks/);
+      for (const line of lines) assert.doesNotMatch(stripVTControlCharacters(compositeTuiLine("PERSISTENT Tasks header", line, 0, 80, 80)), /PERSISTENT/);
+    }
+    view.handleInput("\u001b");
+  });
+  await h.command.handler("", h.ctx);
+  assert.equal(h.widgets.get("tasks"), widget, "closing exposes the same persistent widget, not a stale replacement");
 });
 
 test("historical v1 tool results remain expandable without rewriting their snapshots", async () => {
